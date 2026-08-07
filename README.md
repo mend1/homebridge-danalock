@@ -157,35 +157,6 @@ These are properties of the Danalock platform, not of this plugin:
 - **The API is unofficial.** It is not publicly documented or supported, and Danalock could change
   it at any time.
 
-## Troubleshooting
-
-**The lock shows "No Response".**
-The plugin could not verify the lock's state after `unresponsiveThreshold` consecutive attempts.
-This is deliberate: rather than keep displaying a possibly-wrong "Locked", it reports that the
-state is unknown. Check the Danabridge is powered on, online, and within Bluetooth range of the
-lock. Locks behind other bridges are unaffected.
-
-**"Could not determine the Danabridge paired with …"**
-The plugin could not resolve which bridge that lock uses, so it fell back to a shared queue and
-operations won't run in parallel. Confirm the lock is paired with a Danabridge in the Danalock app.
-
-**Frequent "bridge busy" messages.**
-Something else is talking to the same bridge — the Danalock app, or another Homebridge instance.
-Raising `pollInterval` will reduce the contention.
-
-**Authentication failures.**
-Verify the email and password by signing in at [my.danalock.com](https://my.danalock.com). Run
-Homebridge with `-D` for debug logging; credentials and tokens are never logged.
-
-## Development
-
-```bash
-npm install
-npm run build
-npm run lint
-npm test
-```
-
 ## Acknowledgements
 
 The API behaviour this plugin relies on was documented by the community, in particular
