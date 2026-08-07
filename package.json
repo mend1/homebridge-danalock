@@ -1,10 +1,10 @@
 {
   "displayName": "Homebridge Danalock",
   "name": "homebridge-danalock",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Homebridge plugin for the Danalock V3-BT smart lock, via the Danalock cloud API and a Danabridge.",
   "license": "MIT",
-  "author": "",
+  "author": "mend1 (https://github.com/mend1)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mend1/homebridge-danalock.git"
@@ -22,6 +22,7 @@
     "dist",
     "config.schema.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -29,7 +30,7 @@
     "clean": "rimraf dist",
     "lint": "eslint src test --max-warnings=0",
     "test": "tsx --test test/*.test.ts",
-    "prepare": "npm run build",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run lint && npm run build",
     "watch": "tsc --watch"
   },

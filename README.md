@@ -9,6 +9,12 @@ HomeKit, so you can lock and unlock them from the Home app, Siri, and automation
 Each lock appears as a HomeKit **Lock Mechanism**, with its **battery level** reported as part of
 the same accessory.
 
+## Status
+
+Actively used and working, but only tested on Danalock V3-BT. Other setups — multiple locks behind
+a single bridge, or the Z-Wave/Zigbee Danalock variants — should work by design but have not been
+exercised. Bug reports welcome.
+
 ## Requirements
 
 > [!IMPORTANT]
@@ -25,60 +31,25 @@ the same accessory.
 Multiple locks and multiple Danabridges are fully supported, in any combination — one bridge per
 lock, several locks behind one bridge, or a mix.
 
-## Installing on a Homebridge server (Ubuntu)
+## Installation
 
-This plugin is not published to the npm registry, so it is installed from a tarball you build
-yourself. No GitHub credentials are needed on the server.
-
-**1. Build the tarball** on a machine with the source checked out:
+Search for **Danalock** in the Homebridge UI's plugin tab and click Install, or from the command
+line:
 
 ```bash
-npm pack
+sudo npm install -g homebridge-danalock
+sudo hb-service restart
 ```
 
-This produces `homebridge-danalock-0.0.1.tgz`. The `prepare` script compiles the TypeScript first,
-so the tarball always contains freshly built output. It ships only `dist/`, `config.schema.json`,
-and the docs — no TypeScript sources and no dev dependencies, so the server needs no build tools.
-
-**2. Copy it to the server:**
-
-```bash
-scp homebridge-danalock-0.0.1.tgz you@homebridge-server:/tmp/
-```
-
-**3. Install it globally** on the server. Homebridge scans global `node_modules`, so a global
-install is what makes the plugin visible:
-
-```bash
-sudo npm install -g /tmp/homebridge-danalock-0.0.1.tgz
-```
-
-**4. Configure it.** Either use the Homebridge UI — the bundled `config.schema.json` renders a
-proper settings form — or add a platform block to `/var/lib/homebridge/config.json` as shown under
+Then configure it — either through the Homebridge UI, which renders a settings form from the
+bundled schema, or by adding a platform block to `/var/lib/homebridge/config.json` as shown under
 [Configuration](#configuration).
 
-**5. Restart Homebridge and check the log:**
+Check it came up with `sudo hb-service logs`; you should see `Loaded plugin: homebridge-danalock`,
+then `Added "<your lock name>"` for each lock.
 
-```bash
-sudo hb-service restart
-sudo hb-service logs
-```
-
-You should see `Loaded plugin: homebridge-danalock`, then `Added "<your lock name>"` for each lock.
-
-### Upgrading
-
-Bump `version` in `package.json`, then repeat steps 1–3 with the new filename and restart.
-
-### Things to expect
-
-- **The Homebridge UI will mark the plugin as unverified** and cannot notify you about updates.
-  That is simply because it is not on the npm registry — it is not a problem with the plugin.
-- **Node.js must satisfy the `engines` range** (18 or newer). Check with `node -v`; if the server
-  is older, `sudo hb-service update-node` will update it.
-- **npm may warn about an uncovered `prepare` install script.** This is harmless. npm does not run
-  `prepare` when installing from a tarball, and it does not need to — the tarball already contains
-  the compiled `dist/`. You do not need to allow the script.
+Node.js must satisfy the `engines` range (18 or newer). Check with `node -v`; if the server is
+older, `sudo hb-service update-node` will update it.
 
 ## Configuration
 
