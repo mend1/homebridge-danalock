@@ -226,6 +226,61 @@ describe('per-bridge serialisation', () => {
     assert.deepEqual(events, ['execute:A', 'poll:A', 'execute:B', 'poll:B']);
   });
 
+  it('lets a user command jump ahead of queued background polls', async () => {
+    mockToken();
+
+    // One bridge, three locks' worth of traffic. LOCK_A's read occupies the bridge first; a poll
+    // for LOCK_B is queued behind it, then a user operation arrives.
+    for (const [lock, label] of [
+      [LOCK_A, 'A'],
+      [LOCK_B, 'B'],
+    ] as const) {
+      agent
+        .get(BRIDGE_ORIGIN)
+        .intercept({ path: '/bridge/v1/execute', method: 'POST', body: bodyIncludes(lock) })
+        .reply(200, (options) => {
+          events.push(`execute:${label}`);
+          // Record which operation ran, so ordering can be asserted by intent, not just by device.
+          const payload = JSON.parse(String(options.body)) as { operation: string };
+          events.push(`op:${payload.operation}`);
+          return { id: `job-${label}` };
+        })
+        .delay(20)
+        .persist();
+
+      agent
+        .get(BRIDGE_ORIGIN)
+        .intercept({ path: '/bridge/v1/poll', method: 'POST', body: bodyIncludes(`job-${label}`) })
+        .reply(200, { id: `job-${label}`, status: 'Succeeded', result: { state: 'Locked' } })
+        .persist();
+    }
+
+    const client = newClient();
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+    client.setBridgeForLock(LOCK_B, BRIDGE_1);
+
+    const inFlight = client.getState(LOCK_A); // starts immediately, occupies the bridge
+    const queuedPoll = client.getState(LOCK_B); // queued behind it
+    const userCommand = client.operate(LOCK_B, 'lock'); // queued, but priority
+
+    await Promise.all([inFlight, queuedPoll, userCommand]);
+
+    // A is already running and cannot be pre-empted, but the user's command must overtake the
+    // background poll that was queued ahead of it.
+    const executes = events.filter((event) => event.startsWith('execute:'));
+    assert.equal(executes.length, 3);
+    assert.equal(executes[0], 'execute:A', 'the in-flight read runs first; it cannot be cancelled');
+    assert.deepEqual(executes.slice(1), ['execute:B', 'execute:B']);
+
+    // Prove ordering by intent: the user's command overtakes the poll that was queued before it.
+    const operations = events.filter((event) => event.startsWith('op:'));
+    assert.deepEqual(operations, [
+      'op:afi.lock.get-state', // LOCK_A — already in flight, cannot be pre-empted
+      'op:afi.lock.operate', // LOCK_B — user command, jumped ahead
+      'op:afi.lock.get-state', // LOCK_B — background poll, ran last
+    ]);
+  });
+
   it('does not wedge a bridge queue when an operation fails', async () => {
     mockToken();
 

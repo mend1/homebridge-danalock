@@ -66,6 +66,15 @@ export interface ApiTimings {
   bridgeBusyBackoffMs: number;
 }
 
+/** A task waiting for its bridge to become free. */
+interface QueuedTask {
+  run: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+  /** User-initiated operations jump ahead of background polling. */
+  priority: boolean;
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -95,8 +104,11 @@ export class DanalockApiClient {
   /** lock serial -> bridge serial (queue key). */
   private readonly bridgeByLock = new Map<string, string>();
 
-  /** queue key -> tail of the promise chain for that bridge. */
-  private readonly queues = new Map<string, Promise<unknown>>();
+  /** queue key -> tasks waiting for that bridge, highest priority first. */
+  private readonly pending = new Map<string, QueuedTask[]>();
+
+  /** Queue keys currently draining, so only one task per bridge runs at a time. */
+  private readonly draining = new Set<string>();
 
   /** Guards against concurrent token refreshes. */
   private authInFlight: Promise<void> | null = null;
@@ -372,16 +384,26 @@ export class DanalockApiClient {
     return null;
   }
 
-  /** Locks or unlocks. Throws if the operation did not complete. */
+  /**
+   * Locks or unlocks. Throws if the operation did not complete.
+   *
+   * Queued at priority: someone is waiting at the door, so this must not sit behind background
+   * state polling.
+   */
   async operate(lockSerial: string, operation: LockOperation): Promise<void> {
-    await this.run(lockSerial, OP_OPERATE, [operation]);
+    await this.run(lockSerial, OP_OPERATE, [operation], true);
   }
 
   /**
    * Queues an operation on the lock's bridge, then runs the execute → poll cycle, retrying if the
    * bridge reports itself busy.
    */
-  private run(lockSerial: string, operation: string, args?: string[]): Promise<Record<string, unknown>> {
+  private run(
+    lockSerial: string,
+    operation: string,
+    args?: string[],
+    priority = false,
+  ): Promise<Record<string, unknown>> {
     return this.enqueue(this.queueKey(lockSerial), async () => {
       let lastError: DanalockJobError | undefined;
 
@@ -401,27 +423,72 @@ export class DanalockApiClient {
       }
 
       throw lastError ?? new DanalockJobError(`Operation ${operation} failed for ${lockSerial}.`);
-    });
+    }, priority);
   }
 
   /**
-   * Serialises tasks per queue key. Each key keeps its own promise chain, so separate bridges
-   * proceed independently while a shared bridge runs strictly one operation at a time.
+   * Serialises tasks per queue key: separate bridges proceed independently, while a shared bridge
+   * runs strictly one operation at a time.
+   *
+   * Priority tasks (user-initiated lock/unlock) are placed ahead of queued background polls, so a
+   * tap in the Home app waits at most for the one job already in flight rather than the whole
+   * backlog. An in-flight job cannot be cancelled — the bridge is already working on it.
    */
-  private enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.queues.get(key) ?? Promise.resolve();
-    // Run after the previous task regardless of whether it succeeded — one failure must not
-    // wedge the queue for that bridge.
-    const run = previous.then(task, task);
-    // Store a non-rejecting tail so an unhandled rejection can't escape the chain.
-    this.queues.set(
-      key,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return run;
+  private enqueue<T>(key: string, task: () => Promise<T>, priority = false): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const entry: QueuedTask = {
+        run: task as () => Promise<unknown>,
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        priority,
+      };
+
+      const queue = this.pending.get(key) ?? [];
+      if (priority) {
+        // Ahead of background work, but behind any priority task already waiting, so user
+        // commands still run in the order they were issued.
+        const firstNormal = queue.findIndex((queued) => !queued.priority);
+        if (firstNormal === -1) {
+          queue.push(entry);
+        } else {
+          queue.splice(firstNormal, 0, entry);
+        }
+      } else {
+        queue.push(entry);
+      }
+      this.pending.set(key, queue);
+
+      void this.drain(key);
+    });
+  }
+
+  /** Runs queued tasks for one bridge, one at a time, until none are left. */
+  private async drain(key: string): Promise<void> {
+    if (this.draining.has(key)) {
+      return;
+    }
+    this.draining.add(key);
+
+    try {
+      for (;;) {
+        const queue = this.pending.get(key);
+        const next = queue?.shift();
+
+        if (!next) {
+          this.pending.delete(key);
+          return;
+        }
+
+        // Settle each task individually — one failure must never wedge the bridge's queue.
+        try {
+          next.resolve(await next.run());
+        } catch (error) {
+          next.reject(error);
+        }
+      }
+    } finally {
+      this.draining.delete(key);
+    }
   }
 
   /** One execute → poll cycle against the bridge. */

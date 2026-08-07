@@ -120,6 +120,7 @@ interface Harness {
 
 function buildHarness(options: {
   getState: () => Promise<'Locked' | 'Unlocked' | null>;
+  operate?: () => Promise<void>;
   unresponsiveThreshold?: number;
   showBattery?: boolean;
 }): Harness {
@@ -129,7 +130,7 @@ function buildHarness(options: {
   const api2 = {
     getState: options.getState,
     getBattery: async () => null,
-    operate: async () => undefined,
+    operate: options.operate ?? (async () => undefined),
   };
 
   const platform = {
@@ -157,6 +158,13 @@ function buildHarness(options: {
 
 const readCurrentState = (harness: Harness): unknown =>
   harness.lockService.getCharacteristic(Characteristic.LockCurrentState).getHandler!();
+
+const readTargetState = (harness: Harness): unknown =>
+  harness.lockService.getCharacteristic(Characteristic.LockTargetState).getHandler!();
+
+/** Invokes the HomeKit write handler exactly as HAP would. */
+const writeTargetState = (harness: Harness, value: number): Promise<void> | void =>
+  harness.lockService.getCharacteristic(Characteristic.LockTargetState).setHandler!(value) as Promise<void> | void;
 
 describe('state polling failures', () => {
   it('keeps the last known state through isolated failures', async () => {
@@ -242,6 +250,100 @@ describe('state polling failures', () => {
 
     // The bridge replied, so this is lock ambiguity, not a communication failure.
     assert.equal(readCurrentState(harness), Characteristic.LockCurrentState.UNKNOWN);
+  });
+});
+
+describe('operating the lock from HomeKit', () => {
+  /**
+   * HomeKit gives a write handler 3s before warning and 9s before it gives up with
+   * OPERATION_TIMED_OUT and shows "No Response" (hap-nodejs Accessory.TIMEOUT_WARNING /
+   * TIMEOUT_AFTER_WARNING). A Danalock operation takes 5-7s, so the handler must not wait for it.
+   */
+  it('returns to HomeKit immediately instead of waiting for the lock', async () => {
+    let releaseOperation: (() => void) | undefined;
+    const operationStarted = { value: false };
+
+    const harness = buildHarness({
+      getState: async () => 'Unlocked',
+      operate: () =>
+        new Promise<void>((resolve) => {
+          operationStarted.value = true;
+          releaseOperation = resolve;
+        }),
+    });
+
+    // Establish a known starting state, as a real poll would.
+    await harness.accessory.refresh();
+
+    const started = Date.now();
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+    const elapsed = Date.now() - started;
+
+    // The operation is still running — the handler did not wait for it.
+    assert.equal(operationStarted.value, true, 'the operation should have been started');
+    assert.equal(releaseOperation !== undefined, true, 'the operation should still be pending');
+    assert.ok(elapsed < 1_000, `handler took ${elapsed}ms; it must return well inside HomeKit's 3s budget`);
+
+    // HomeKit shows "Locking…" meanwhile: target is the new value, current is not there yet.
+    assert.equal(readTargetState(harness), Characteristic.LockTargetState.SECURED);
+    assert.equal(readCurrentState(harness), Characteristic.LockCurrentState.UNSECURED);
+
+    releaseOperation!();
+  });
+
+  it('updates the current state once the operation completes', async () => {
+    let releaseOperation: (() => void) | undefined;
+    const harness = buildHarness({
+      getState: async () => 'Unlocked',
+      operate: () => new Promise<void>((resolve) => (releaseOperation = resolve)),
+    });
+
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+    releaseOperation!();
+    // Let the background continuation settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(readCurrentState(harness), Characteristic.LockCurrentState.SECURED);
+    assert.ok(harness.logs.some((entry) => entry.level === 'info' && /is now locked/.test(entry.message)));
+  });
+
+  it('reverts the target and logs an error when the command fails', async () => {
+    const harness = buildHarness({
+      getState: async () => 'Unlocked',
+      operate: async () => {
+        throw new Error('bridge offline');
+      },
+    });
+
+    // Establish a known current state first.
+    await harness.accessory.refresh();
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The handler already returned, so failure surfaces by snapping back plus an error log.
+    assert.equal(readTargetState(harness), Characteristic.LockTargetState.UNSECURED);
+
+    const errors = harness.logs.filter((entry) => entry.level === 'error');
+    assert.equal(errors.length >= 1, true, 'a user-initiated failure must always be logged as an error');
+    assert.match(errors[0].message, /has NOT been locked/);
+  });
+
+  it('rejects a second command while one is still running', async () => {
+    let releaseOperation: (() => void) | undefined;
+    const harness = buildHarness({
+      getState: async () => 'Unlocked',
+      operate: () => new Promise<void>((resolve) => (releaseOperation = resolve)),
+    });
+
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+
+    assert.throws(
+      () => writeTargetState(harness, Characteristic.LockTargetState.UNSECURED),
+      HapStatusError,
+      'overlapping taps should be rejected, not queued up',
+    );
+
+    releaseOperation!();
   });
 });
 

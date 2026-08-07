@@ -36,7 +36,7 @@
         "default": 10,
         "minimum": 5,
         "maximum": 3600,
-        "description": "Gap between state-refresh rounds. Controls how quickly changes made outside HomeKit are noticed. Each read costs a 5-7s round-trip to the lock, so values below 5s are clamped and will only cause 'bridge busy' errors."
+        "description": "Gap between state-refresh rounds. Controls how quickly changes made outside HomeKit are noticed. Each read costs a 5-7s round-trip to the lock, so values below 5s are clamped and will only cause 'bridge busy' errors. Shorter intervals also keep the Danabridge busier, so a lock/unlock you trigger is more likely to queue behind a poll before it runs."
       },
       "batteryPollInterval": {
         "title": "Battery Poll Interval (seconds)",

@@ -159,7 +159,18 @@ export class DanalockLockAccessory {
   // HomeKit writes
   // ---------------------------------------------------------------------------
 
-  private async setTargetState(value: CharacteristicValue): Promise<void> {
+  /**
+   * Accepts the request and returns immediately — it must NOT wait for the lock.
+   *
+   * HomeKit allows a write handler 3s before warning and 9s in total before it gives up with
+   * OPERATION_TIMED_OUT and paints the accessory "No Response" (see Accessory.TIMEOUT_WARNING and
+   * TIMEOUT_AFTER_WARNING in hap-nodejs). A Danalock operation takes 5-7s on its own, more when it
+   * queues behind a poll, so awaiting it here reliably blew that budget.
+   *
+   * Returning straight away also gives the correct HomeKit behaviour for a slow lock: while the
+   * current state differs from the target, the Home app shows "Locking…" / "Unlocking…".
+   */
+  private setTargetState(value: CharacteristicValue): void {
     const { Characteristic } = this.platform;
     const wantLocked = value === Characteristic.LockTargetState.SECURED;
     const desired: LockState = wantLocked ? 'Locked' : 'Unlocked';
@@ -172,11 +183,16 @@ export class DanalockLockAccessory {
     this.operating = true;
     this.targetState = desired;
 
+    // Deliberately not awaited: the handler returns now, the lock catches up.
+    void this.runOperation(desired, wantLocked);
+  }
+
+  /** Performs the operation in the background and reconciles state when it settles. */
+  private async runOperation(desired: LockState, wantLocked: boolean): Promise<void> {
     try {
       this.platform.log.info(`${wantLocked ? 'Locking' : 'Unlocking'} ${this.label}...`);
       await this.platform.api2.operate(this.serial, wantLocked ? 'lock' : 'unlock');
 
-      // Reflect success immediately; waiting for the next poll would add seconds of visible lag.
       this.currentState = desired;
       this.clearFailureStreak();
       this.publishState();
@@ -185,15 +201,18 @@ export class DanalockLockAccessory {
       // Confirm against the lock shortly after, in case it did not physically complete.
       this.platform.scheduleConfirmation(this);
     } catch (error) {
-      // A command the user explicitly issued failed — always surface it, never swallow.
+      // A command the user explicitly issued failed — always surface it, never swallow. The write
+      // handler has already returned, so this cannot be reported by throwing; instead the target
+      // snaps back to the real state and the failure is logged.
       this.platform.log.error(
         `Failed to ${wantLocked ? 'lock' : 'unlock'} ${this.label}: ${describe(error)}. The door has NOT been ${desired.toLowerCase()}.`,
       );
       this.targetState = this.currentState;
       this.publishState();
-      throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
-      );
+
+      // Re-read rather than trusting the assumption that nothing moved.
+      this.operating = false;
+      await this.refresh();
     } finally {
       this.operating = false;
     }
