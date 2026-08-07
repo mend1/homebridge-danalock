@@ -1,0 +1,56 @@
+{
+  "displayName": "Homebridge Danalock",
+  "name": "homebridge-danalock",
+  "version": "1.0.0",
+  "description": "Homebridge plugin for the Danalock V3-BT smart lock, via the Danalock cloud API and a Danabridge.",
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mend1/homebridge-danalock.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mend1/homebridge-danalock/issues"
+  },
+  "homepage": "https://github.com/mend1/homebridge-danalock#readme",
+  "engines": {
+    "node": "^18.20.4 || ^20.18.0 || ^22.10.0 || >=24.0.0",
+    "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rimraf dist",
+    "lint": "eslint src test --max-warnings=0",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run lint && npm run build",
+    "watch": "tsc --watch"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "danalock",
+    "danabridge",
+    "lock",
+    "smart-lock",
+    "homekit"
+  ],
+  "dependencies": {
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.14.0",
+    "@types/node": "^22.9.0",
+    "eslint": "^9.14.0",
+    "homebridge": "^1.8.5",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.13.0"
+  }
+}

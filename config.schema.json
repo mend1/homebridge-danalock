@@ -1,0 +1,96 @@
+{
+  "pluginAlias": "Danalock",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Controls Danalock V3 locks through the Danalock cloud API. **A Danabridge is required** — the V3-BT is Bluetooth-only and the Danabridge is what puts it on the network.",
+  "footerDisplay": "Commands take roughly 5-7 seconds (cloud → Danabridge → Bluetooth → lock). Locking/unlocking from HomeKit updates immediately on success; the poll interval only controls how quickly *externally* made changes (physical key, Danalock app, auto-lock) are noticed.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Danalock",
+        "required": true,
+        "description": "Platform name shown in the Homebridge log."
+      },
+      "username": {
+        "title": "Danalock Account Email",
+        "type": "string",
+        "required": true,
+        "format": "email",
+        "description": "The email address of your Danalock account."
+      },
+      "password": {
+        "title": "Danalock Account Password",
+        "type": "string",
+        "required": true,
+        "x-schema-form": {
+          "type": "password"
+        },
+        "description": "Stored in your Homebridge config. Never logged."
+      },
+      "pollInterval": {
+        "title": "State Poll Interval (seconds)",
+        "type": "integer",
+        "default": 10,
+        "minimum": 5,
+        "maximum": 3600,
+        "description": "Gap between state-refresh rounds. Controls how quickly changes made outside HomeKit are noticed. Each read costs a 5-7s round-trip to the lock, so values below 5s are clamped and will only cause 'bridge busy' errors."
+      },
+      "batteryPollInterval": {
+        "title": "Battery Poll Interval (seconds)",
+        "type": "integer",
+        "default": 3600,
+        "minimum": 300,
+        "description": "How often to read the battery level. Battery changes slowly and each read costs a full round-trip to the lock, so this should stay much higher than the state poll interval."
+      },
+      "showBattery": {
+        "title": "Show Battery Level",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose the lock's battery level in HomeKit. It appears within the lock accessory (not as a separate tile) and drives the Low Battery warning."
+      },
+      "lowBatteryThreshold": {
+        "title": "Low Battery Threshold (%)",
+        "type": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 99,
+        "condition": {
+          "functionBody": "return model.showBattery !== false;"
+        },
+        "description": "Battery percentage at or below which HomeKit shows a Low Battery warning."
+      },
+      "unresponsiveThreshold": {
+        "title": "Unresponsive Threshold (failed polls)",
+        "type": "integer",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 20,
+        "description": "How many consecutive failed state polls before the lock shows as 'No Response' in the Home app. A lock is not shown as Locked/Unlocked once its state can no longer be verified. Increase this if you are on flaky Wi-Fi and prefer more tolerance."
+      },
+      "locks": {
+        "title": "Lock Filter",
+        "type": "array",
+        "description": "Optional. Leave empty to expose every lock on the account.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "identifier": {
+              "title": "Lock Name or Serial",
+              "type": "string",
+              "description": "The lock's name as shown in the Danalock app, or its serial number."
+            },
+            "exclude": {
+              "title": "Exclude this lock",
+              "type": "boolean",
+              "default": false,
+              "description": "If any entry is left un-excluded, only the listed locks are exposed. Excluded locks are always hidden."
+            }
+          }
+        }
+      }
+    }
+  }
+}
