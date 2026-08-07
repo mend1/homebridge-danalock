@@ -1,0 +1,53 @@
+name: release
+
+# Publishing a GitHub release publishes the package to npm.
+# Authentication uses npm trusted publishing (OIDC) — there is no NPM_TOKEN secret.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  # Required for OIDC trusted publishing and for provenance attestation.
+  # Publishing fails without it.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm >= 11.5.1, which is newer than the npm
+      # bundled with the runner's Node.
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # prepublishOnly re-runs lint and build, but not the tests — so run them
+      # here, before anything is published.
+      - run: npm test
+
+      - name: Check package.json version matches the release tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION=${TAG#v}
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json is $PKG_VERSION but the release is tagged $TAG." \
+                 "Bump the version, or retag, so they agree."
+            exit 1
+          fi
+          echo "Publishing $PKG_VERSION"
+
+      # --provenance is explicit on purpose: it is documented as automatic under
+      # OIDC but is not reliably applied without the flag.
+      - run: npm publish --provenance
