@@ -25,13 +25,60 @@ the same accessory.
 Multiple locks and multiple Danabridges are fully supported, in any combination — one bridge per
 lock, several locks behind one bridge, or a mix.
 
-## Installation
+## Installing on a Homebridge server (Ubuntu)
 
-Search for **Danalock** in the Homebridge UI's plugin tab and install it, or from the command line:
+This plugin is not published to the npm registry, so it is installed from a tarball you build
+yourself. No GitHub credentials are needed on the server.
+
+**1. Build the tarball** on a machine with the source checked out:
 
 ```bash
-npm install -g homebridge-danalock
+npm pack
 ```
+
+This produces `homebridge-danalock-0.0.1.tgz`. The `prepare` script compiles the TypeScript first,
+so the tarball always contains freshly built output. It ships only `dist/`, `config.schema.json`,
+and the docs — no TypeScript sources and no dev dependencies, so the server needs no build tools.
+
+**2. Copy it to the server:**
+
+```bash
+scp homebridge-danalock-0.0.1.tgz you@homebridge-server:/tmp/
+```
+
+**3. Install it globally** on the server. Homebridge scans global `node_modules`, so a global
+install is what makes the plugin visible:
+
+```bash
+sudo npm install -g /tmp/homebridge-danalock-0.0.1.tgz
+```
+
+**4. Configure it.** Either use the Homebridge UI — the bundled `config.schema.json` renders a
+proper settings form — or add a platform block to `/var/lib/homebridge/config.json` as shown under
+[Configuration](#configuration).
+
+**5. Restart Homebridge and check the log:**
+
+```bash
+sudo hb-service restart
+sudo hb-service logs
+```
+
+You should see `Loaded plugin: homebridge-danalock`, then `Added "<your lock name>"` for each lock.
+
+### Upgrading
+
+Bump `version` in `package.json`, then repeat steps 1–3 with the new filename and restart.
+
+### Things to expect
+
+- **The Homebridge UI will mark the plugin as unverified** and cannot notify you about updates.
+  That is simply because it is not on the npm registry — it is not a problem with the plugin.
+- **Node.js must satisfy the `engines` range** (18 or newer). Check with `node -v`; if the server
+  is older, `sudo hb-service update-node` will update it.
+- **npm may warn about an uncovered `prepare` install script.** This is harmless. npm does not run
+  `prepare` when installing from a tarball, and it does not need to — the tarball already contains
+  the compiled `dist/`. You do not need to allow the script.
 
 ## Configuration
 
@@ -72,6 +119,34 @@ Leave `locks` unset to expose every lock on the account. To hide one:
 ```
 
 If any entry is listed *without* `exclude`, only the listed locks are exposed.
+
+## Lock naming
+
+**No naming convention is required.** Name your locks whatever you like in the Danalock app —
+spaces, hyphens, and accented characters are all fine.
+
+This is worth stating explicitly, because the widely-referenced community Node-RED flow *does*
+require alphanumeric-and-underscore names. That restriction exists only because it puts the lock
+name into a URL path. This plugin never does: every API call is keyed on the lock's serial number
+(`afi.serial_number`), and the name is used only for the HomeKit display name and the optional
+`locks` filter.
+
+**Renaming a lock is safe.** A lock's HomeKit identity is derived from its serial, not its name, so
+renaming it in the Danalock app will not create a duplicate accessory or require re-pairing —
+existing automations, scenes, and room assignments all survive. The name shown in Homebridge
+updates on the next restart. If you renamed the accessory in the Home app, *your* name wins and
+stays.
+
+Two suggestions, neither of them requirements:
+
+- **Give each lock a distinct name.** Locks sharing a name still work correctly — the serial keeps
+  them apart internally — but Siri has no way to tell "unlock the front door" from another lock
+  with the same name.
+- **Prefer plain letters, numbers, and spaces.** HomeKit warns about names that don't begin and end
+  with an alphanumeric character, and Siri handles simple names more reliably.
+
+The `locks` filter matches case-insensitively against **either** the name or the serial number. If
+you rename locks often, filter on the serial — it never changes.
 
 ## How it works
 
