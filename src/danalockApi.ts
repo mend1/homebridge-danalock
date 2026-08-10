@@ -522,7 +522,7 @@ export class DanalockApiClient {
       }
 
       if (status === JOB_FAILED) {
-        const detail = String(poll.result?.['bridge_server_status_text'] ?? poll.result?.['afi_status_text'] ?? 'unknown error');
+        const detail = failureDetail(poll.result);
         throw new DanalockJobError(`${operation} failed: ${detail}`, isBusyMessage(detail));
       }
 
@@ -533,6 +533,42 @@ export class DanalockApiClient {
       `${operation} timed out after ${Math.round(this.timings.jobTimeoutMs / 1000)}s. ` +
         'The Danabridge may be offline or out of Bluetooth range of the lock.',
     );
+  }
+}
+
+/**
+ * Describes why a bridge job failed.
+ *
+ * The reason is not always in the field you expect — `BridgeNotAttached`, for instance, arrives in
+ * a different key depending on where the failure happened. Reporting a bare "unknown error"
+ * discards exactly the detail needed to tell a dead Danabridge from a lock out of range, so fall
+ * back to any other non-empty text in the payload, and finally to the payload itself.
+ */
+function failureDetail(result: Record<string, unknown> | undefined): string {
+  if (!result) {
+    return 'no detail returned';
+  }
+
+  const preferred = ['bridge_server_status_text', 'afi_status_text', 'dmi_status_text', 'status_text', 'message', 'error'];
+  for (const key of preferred) {
+    const value = result[key];
+    if (typeof value === 'string' && value.trim() && value.trim().toLowerCase() !== 'ok') {
+      return value.trim();
+    }
+  }
+
+  // Nothing recognisable — surface the raw payload rather than swallowing it.
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === 'string' && value.trim() && value.trim().toLowerCase() !== 'ok') {
+      return `${key}=${value.trim()}`;
+    }
+  }
+
+  try {
+    const serialised = JSON.stringify(result);
+    return serialised && serialised !== '{}' ? `unrecognised failure ${serialised}` : 'no detail returned';
+  } catch {
+    return 'no detail returned';
   }
 }
 

@@ -121,15 +121,17 @@ interface Harness {
 function buildHarness(options: {
   getState: () => Promise<'Locked' | 'Unlocked' | null>;
   operate?: () => Promise<void>;
+  getBattery?: () => Promise<number | null>;
   unresponsiveThreshold?: number;
   showBattery?: boolean;
+  batteryPollInterval?: number;
 }): Harness {
   const logs: { level: string; message: string }[] = [];
   const record = (level: string) => (message: string) => logs.push({ level, message });
 
   const api2 = {
     getState: options.getState,
-    getBattery: async () => null,
+    getBattery: options.getBattery ?? (async () => null),
     operate: options.operate ?? (async () => undefined),
   };
 
@@ -141,7 +143,7 @@ function buildHarness(options: {
     api2,
     options: {
       pollInterval: 10,
-      batteryPollInterval: 3600,
+      batteryPollInterval: options.batteryPollInterval ?? 3600,
       showBattery: options.showBattery ?? false,
       lowBatteryThreshold: 20,
       unresponsiveThreshold: options.unresponsiveThreshold ?? 3,
@@ -351,5 +353,62 @@ describe('battery service', () => {
   it('is linked to the lock so it is not shown as a separate accessory', () => {
     const harness = buildHarness({ getState: async () => 'Locked', showBattery: true });
     assert.equal(harness.lockService.linked.length, 1, 'battery service should be linked to the lock service');
+  });
+
+  /**
+   * A failing battery read used to leave the lock permanently "due", so it retried on every poll
+   * cycle — observed in the wild at ~18s intervals against a configured hour, doubling the load on
+   * an already-struggling bridge.
+   */
+  it('backs off failed battery reads instead of retrying every poll', async () => {
+    let attempts = 0;
+    const harness = buildHarness({
+      getState: async () => 'Locked',
+      showBattery: true,
+      batteryPollInterval: 3600,
+      getBattery: async () => {
+        attempts++;
+        throw new Error('BridgeNotAttached');
+      },
+    });
+
+    for (let i = 0; i < 6; i++) {
+      await harness.accessory.refresh();
+    }
+
+    assert.equal(attempts, 1, `battery should be attempted once per interval, not once per poll (got ${attempts})`);
+  });
+
+  it('warns once about an unreadable battery, not on every attempt', async () => {
+    let failing = true;
+    const harness = buildHarness({
+      getState: async () => 'Locked',
+      showBattery: true,
+      // Always due, so every refresh attempts a read.
+      batteryPollInterval: 0,
+      unresponsiveThreshold: 2,
+      getBattery: async () => {
+        if (failing) {
+          throw new Error('BridgeNotAttached');
+        }
+        return 72;
+      },
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await harness.accessory.refresh();
+    }
+
+    const warnings = harness.logs.filter((entry) => entry.level === 'warn');
+    assert.equal(warnings.length, 1, `one warning per outage, not one per attempt (got ${warnings.length})`);
+    assert.match(warnings[0].message, /Battery level unavailable/);
+
+    // ...and recovery is reported, so the log doesn't imply it is still broken.
+    failing = false;
+    await harness.accessory.refresh();
+    assert.ok(
+      harness.logs.some((entry) => entry.level === 'info' && /battery level is readable again/i.test(entry.message)),
+      'recovery should be logged',
+    );
   });
 });

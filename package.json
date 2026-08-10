@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge Danalock",
   "name": "homebridge-danalock",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Homebridge plugin for the Danalock V3-BT smart lock, via the Danalock cloud API and a Danabridge.",
   "license": "MIT",
   "author": "mend1 (https://github.com/mend1)",

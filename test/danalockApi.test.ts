@@ -138,6 +138,34 @@ describe('execute/poll state machine', () => {
     await assert.rejects(() => newClient().getState(LOCK_A), /deviceoffline/);
   });
 
+  it('reports the real failure reason rather than "unknown error"', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' });
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, {
+        id: 'job-1',
+        status: 'Failed',
+        // The reason is not in the field we look at first, and the usual fields say "ok".
+        result: { afi_status_text: 'ok', dmi_status_text: 'BridgeNotAttached' },
+      });
+
+    // Telling a dead Danabridge from a lock out of range depends on this text surviving.
+    await assert.rejects(() => newClient().getState(LOCK_A), /BridgeNotAttached/);
+  });
+
+  it('surfaces the raw payload when no known field carries the reason', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' });
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Failed', result: { some_future_field: 'GatewayTimeout' } });
+
+    await assert.rejects(() => newClient().getState(LOCK_A), /GatewayTimeout/);
+  });
+
   it('retries when the bridge reports itself busy, then succeeds', async () => {
     mockToken();
     agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).times(2);

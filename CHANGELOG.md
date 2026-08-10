@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-10
+
+Diagnostics and logging fixes, all found while investigating a real outage in which both
+Danabridges lost their connection to the Danalock cloud. None of these caused the outage, but two
+of them made it noisier and put avoidable extra load on the failing bridges.
+
+### Fixed
+
+- **Failed battery reads no longer retry every poll cycle.** Scheduling was based on the last
+  *successful* read, so once a battery read started failing the lock looked perpetually due and was
+  retried on every cycle — roughly every 18 seconds against a configured hour, and over a hundred
+  consecutive times in one observed case. That doubled the request load on a bridge that was
+  already struggling. Scheduling is now based on the last *attempt*, successful or not.
+- **An unreadable battery is warned about once per outage, not once per attempt.** State reads
+  already behaved this way; battery reads did not, producing hundreds of identical warnings.
+  Recovery is now logged too.
+- **Bridge failures report what actually went wrong.** Only two fields of the failure payload were
+  consulted, so reasons carried elsewhere — `BridgeNotAttached` among them — were reported as
+  "unknown error", discarding exactly the detail needed to tell an offline Danabridge from a lock
+  out of Bluetooth range. Other known fields are now consulted, and an unrecognised payload is
+  surfaced verbatim rather than swallowed.
+
 ## [0.1.0] - 2026-08-07
 
 First public release.
@@ -47,4 +69,5 @@ First public release.
   outside HomeKit are detected by polling, as the API offers no push notifications.
 - Built on unofficial, undocumented API endpoints, which Danalock could change at any time.
 
+[0.1.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.0

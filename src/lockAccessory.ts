@@ -27,9 +27,17 @@ export class DanalockLockAccessory {
   private warnedUnresponsive = false;
 
   private batteryLevel: number | null = null;
+  /** When the battery was last read *successfully* — drives the staleness warning. */
   private batteryReadAt = 0;
+  /**
+   * When a battery read was last *attempted*, successful or not. Scheduling is based on this so a
+   * failing lock backs off to the configured interval instead of retrying every poll cycle.
+   */
+  private batteryAttemptedAt = 0;
   private batteryFailureStreak = 0;
   private warnedStaleBattery = false;
+  /** Ensures the battery outage is warned about once, not on every attempt. */
+  private warnedBatteryUnavailable = false;
 
   /** Set while a user-initiated operation is running, so polling doesn't fight the command. */
   private operating = false;
@@ -259,16 +267,26 @@ export class DanalockLockAccessory {
   }
 
   private async refreshBattery(): Promise<void> {
+    // Recorded before the attempt, not after a successful one. Otherwise a lock whose battery
+    // reads keep failing looks perpetually "due" and gets retried every poll cycle, doubling the
+    // load on a bridge that is already struggling.
+    this.batteryAttemptedAt = Date.now();
+
     try {
       const level = await this.platform.api2.getBattery(this.serial);
       if (level === null) {
         return;
       }
 
+      if (this.warnedBatteryUnavailable) {
+        this.platform.log.info(`${this.label} battery level is readable again (${level}%).`);
+      }
+
       this.batteryLevel = level;
       this.batteryReadAt = Date.now();
       this.batteryFailureStreak = 0;
       this.warnedStaleBattery = false;
+      this.warnedBatteryUnavailable = false;
 
       const { Characteristic } = this.platform;
       this.batteryService?.updateCharacteristic(Characteristic.BatteryLevel, level);
@@ -283,9 +301,13 @@ export class DanalockLockAccessory {
       this.batteryFailureStreak++;
       const known = this.batteryLevel === null ? 'no previous reading' : `keeping last known value (${this.batteryLevel}%)`;
 
-      if (this.batteryFailureStreak >= this.platform.options.unresponsiveThreshold) {
+      // Warn once on crossing the threshold, as state reads do. Warning on every attempt turns a
+      // single outage into hundreds of identical lines and buries anything useful.
+      if (this.batteryFailureStreak >= this.platform.options.unresponsiveThreshold && !this.warnedBatteryUnavailable) {
+        this.warnedBatteryUnavailable = true;
         this.platform.log.warn(
-          `Battery level unavailable for ${this.label} after ${this.batteryFailureStreak} attempts: ${describe(error)}; ${known}.`,
+          `Battery level unavailable for ${this.label} after ${this.batteryFailureStreak} attempts: ${describe(error)}; ${known}. ` +
+            'Further battery failures for this lock will be logged at debug level until it recovers.',
         );
       } else {
         this.platform.log.debug(`Battery read failed for ${this.label}: ${describe(error)}; ${known}.`);
@@ -306,7 +328,7 @@ export class DanalockLockAccessory {
   }
 
   private isBatteryDue(): boolean {
-    return Date.now() - this.batteryReadAt >= this.platform.options.batteryPollInterval * 1000;
+    return Date.now() - this.batteryAttemptedAt >= this.platform.options.batteryPollInterval * 1000;
   }
 
   private recordStateFailure(error: unknown): void {
