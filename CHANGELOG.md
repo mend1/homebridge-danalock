@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-beta.1] - 2026-08-11
+
+Prerelease. Diagnostics, prompted by one Danabridge misbehaving while another on the same account
+and network stayed healthy. Enable Homebridge debug mode to see the new output.
+
+### Added
+
+- **A line per bridge operation** at debug: bridge, lock, operation, outcome, duration and poll
+  count, with the failure detail when it fails. Successes are included — a healthy bridge's
+  timings are the baseline that makes an unhealthy one legible.
+- **A per-bridge summary every five minutes** at debug: successes over attempts, failures grouped
+  by reason, and min/median/max duration. Individual failures are hard to read as a trend; two
+  bridges side by side are not.
+- HTTP error responses now include a short excerpt of the server's body, where a throttle or quota
+  message would appear. Credentials, tokens, and auth headers are never logged, and a test asserts
+  it.
+
+### Changed
+
+- **Background reads now give up after 25s instead of 60s.** A hung poll held its bridge's queue
+  for a full minute — several poll intervals — and a job that has not landed by then is not going
+  to. User-initiated locking and unlocking keeps the full 60s, since a real command deserves the
+  patience.
+
 ## [0.2.0-beta.0] - 2026-08-11
 
 Prerelease, published to the `beta` tag. Install with
@@ -102,6 +126,7 @@ First public release.
   outside HomeKit are detected by polling, as the API offers no push notifications.
 - Built on unofficial, undocumented API endpoints, which Danalock could change at any time.
 
+[0.2.0-beta.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.1
 [0.2.0-beta.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.0
 [0.1.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.0

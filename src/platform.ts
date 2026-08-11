@@ -49,6 +49,7 @@ export class DanalockPlatform implements DynamicPlatformPlugin {
   private readonly locks = new Map<string, DanalockLockAccessory>();
 
   private pollTimer?: NodeJS.Timeout;
+  private summaryTimer?: NodeJS.Timeout;
   private readonly confirmationTimers = new Set<NodeJS.Timeout>();
   private shuttingDown = false;
 
@@ -83,6 +84,9 @@ export class DanalockPlatform implements DynamicPlatformPlugin {
       this.shuttingDown = true;
       if (this.pollTimer) {
         clearTimeout(this.pollTimer);
+      }
+      if (this.summaryTimer) {
+        clearInterval(this.summaryTimer);
       }
       for (const timer of this.confirmationTimers) {
         clearTimeout(timer);
@@ -261,6 +265,22 @@ export class DanalockPlatform implements DynamicPlatformPlugin {
 
     this.log.debug(`Polling lock state every ${this.options.pollInterval}s.`);
     void tick();
+    this.startSummaries();
+  }
+
+  /**
+   * Periodic per-bridge rollup. A single unhealthy Danabridge is hard to see in a stream of
+   * individual failures but obvious next to a healthy one's numbers.
+   */
+  private startSummaries(): void {
+    this.summaryTimer = setInterval(() => {
+      for (const line of this.api2.drainBridgeSummary()) {
+        this.log.debug(line);
+      }
+    }, DEFAULTS.summaryIntervalMs);
+
+    // Never hold the process open for a logging timer.
+    this.summaryTimer.unref?.();
   }
 
   /**

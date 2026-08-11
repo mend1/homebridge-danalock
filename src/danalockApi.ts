@@ -62,8 +62,64 @@ export interface ApiTimings {
   requestTimeoutMs: number;
   jobPollIntervalMs: number;
   jobTimeoutMs: number;
+  backgroundJobTimeoutMs: number;
   bridgeBusyRetries: number;
   bridgeBusyBackoffMs: number;
+}
+
+/** Rolling per-bridge counters, so a healthy bridge can be compared against a failing one. */
+class BridgeStats {
+  private readonly byBridge = new Map<
+    string,
+    { attempts: number; successes: number; durations: number[]; reasons: Map<string, number> }
+  >();
+
+  record(bridge: string, ok: boolean, elapsedMs: number, detail?: string): void {
+    let entry = this.byBridge.get(bridge);
+    if (!entry) {
+      entry = { attempts: 0, successes: 0, durations: [], reasons: new Map() };
+      this.byBridge.set(bridge, entry);
+    }
+
+    entry.attempts++;
+    entry.durations.push(elapsedMs);
+    if (ok) {
+      entry.successes++;
+    } else if (detail) {
+      // Collapse to the leading token so "afi.lock.get-state failed: Busy" and a timeout
+      // aggregate into readable buckets rather than unique strings.
+      const reason = detail.split(/[:—]/)[0].trim().slice(0, 40) || 'unknown';
+      entry.reasons.set(reason, (entry.reasons.get(reason) ?? 0) + 1);
+    }
+  }
+
+  /** Returns one summary line per bridge that saw traffic, and clears the window. */
+  drain(): string[] {
+    const lines: string[] = [];
+
+    for (const [bridge, entry] of this.byBridge) {
+      if (entry.attempts === 0) {
+        continue;
+      }
+
+      const sorted = [...entry.durations].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+      const failures = entry.attempts - entry.successes;
+      const reasons = [...entry.reasons.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => `${reason}×${count}`)
+        .join(', ');
+
+      lines.push(
+        `[bridge ${bridge}] ${entry.successes}/${entry.attempts} ok` +
+          (failures > 0 ? `, ${failures} failed (${reasons || 'unspecified'})` : '') +
+          `; duration min/med/max ${sorted[0] ?? 0}/${median}/${sorted[sorted.length - 1] ?? 0}ms`,
+      );
+    }
+
+    this.byBridge.clear();
+    return lines;
+  }
 }
 
 /** A task waiting for its bridge to become free. */
@@ -120,6 +176,9 @@ export class DanalockApiClient {
    */
   private minOperationGapMs = 0;
 
+  /** Per-bridge counters for the periodic summary. */
+  private readonly stats = new BridgeStats();
+
   /** Guards against concurrent token refreshes. */
   private authInFlight: Promise<void> | null = null;
 
@@ -135,6 +194,7 @@ export class DanalockApiClient {
       requestTimeoutMs: DEFAULTS.requestTimeoutMs,
       jobPollIntervalMs: DEFAULTS.jobPollIntervalMs,
       jobTimeoutMs: DEFAULTS.jobTimeoutMs,
+      backgroundJobTimeoutMs: DEFAULTS.backgroundJobTimeoutMs,
       bridgeBusyRetries: DEFAULTS.bridgeBusyRetries,
       bridgeBusyBackoffMs: DEFAULTS.bridgeBusyBackoffMs,
       ...timings,
@@ -302,7 +362,12 @@ export class DanalockApiClient {
       if (result.status === 401) {
         throw new DanalockAuthError('Danalock rejected the credentials (HTTP 401).');
       }
-      throw new DanalockApiError(`${method} ${redactUrl(url)} returned HTTP ${result.status}.`);
+      // Include a short excerpt of the body: a throttle or quota message would appear here, and
+      // without it an HTTP status alone cannot distinguish one from a transient server fault.
+      // Truncated, and it is a *response* body, so it carries no credentials of ours.
+      const excerpt = typeof result.body === 'string' ? result.body : JSON.stringify(result.body ?? '');
+      const suffix = excerpt && excerpt !== '""' ? ` Body: ${excerpt.slice(0, 200)}` : '';
+      throw new DanalockApiError(`${method} ${redactUrl(url)} returned HTTP ${result.status}.${suffix}`);
     }
 
     return result.body as T;
@@ -360,6 +425,14 @@ export class DanalockApiClient {
    */
   setMinOperationGap(milliseconds: number): void {
     this.minOperationGapMs = Math.max(0, milliseconds);
+  }
+
+  /**
+   * Returns one summary line per bridge that saw traffic since the last call, and resets the
+   * window. Comparing bridges side by side is what identifies an unhealthy one.
+   */
+  drainBridgeSummary(): string[] {
+    return this.stats.drain();
   }
 
   /** Registers which bridge a lock sits behind, so its operations queue on the right key. */
@@ -435,7 +508,7 @@ export class DanalockApiClient {
       }
 
       try {
-        return await this.executeAndPoll(lockSerial, operation, args);
+        return await this.executeAndPoll(lockSerial, operation, args, priority);
       } catch (error) {
         // Do NOT retry a busy bridge. Retrying turns one busy round into several operations'
         // worth of occupation and amplifies exactly the contention it is reacting to; the caller
@@ -528,46 +601,86 @@ export class DanalockApiClient {
     }
   }
 
-  /** One execute → poll cycle against the bridge. */
+  /**
+   * One execute → poll cycle against the bridge.
+   *
+   * Instrumented per operation because this class of fault is per *bridge*: comparing a healthy
+   * bridge's timings against a failing one is what makes an unstable link legible, and successes
+   * are as informative as failures for that.
+   */
   private async executeAndPoll(
     lockSerial: string,
     operation: string,
     args?: string[],
+    priority = false,
   ): Promise<Record<string, unknown>> {
     const payload: Record<string, unknown> = { device: lockSerial, operation };
     if (args?.length) {
       payload['arguments'] = args;
     }
 
-    const execution = await this.request<{ id?: unknown }>('POST', EXECUTE_URL, payload);
-    const jobId = execution?.id;
+    const bridge = this.queueKey(lockSerial);
+    // A user command deserves patience; a background read that has not landed in ~25s is not
+    // going to, and waiting the full minute needlessly occupies the bridge.
+    const timeoutMs = priority ? this.timings.jobTimeoutMs : this.timings.backgroundJobTimeoutMs;
+    const startedAt = Date.now();
+    let polls = 0;
+
+    const record = (outcome: string, detail?: string): void => {
+      const elapsed = Date.now() - startedAt;
+      this.stats.record(bridge, outcome === 'ok', elapsed, detail);
+      this.log.debug(
+        `[bridge ${bridge}] ${operation} on ${lockSerial}: ${outcome} in ${elapsed}ms after ${polls} poll(s)` +
+          (detail ? ` — ${detail}` : ''),
+      );
+    };
+
+    let jobId: unknown;
+    try {
+      const execution = await this.request<{ id?: unknown }>('POST', EXECUTE_URL, payload);
+      jobId = execution?.id;
+    } catch (error) {
+      record('failed', `execute rejected: ${errorText(error)}`);
+      throw error;
+    }
+
     if (typeof jobId !== 'string' || !jobId) {
+      record('failed', 'no job id returned');
       throw new DanalockJobError(`The bridge did not return a job id for ${operation}.`);
     }
 
-    this.log.debug(`Job ${jobId}: ${operation} on ${lockSerial}.`);
-
-    const deadline = Date.now() + this.timings.jobTimeoutMs;
+    const deadline = startedAt + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(this.timings.jobPollIntervalMs);
 
-      const poll = await this.request<JobPollResponse>('POST', POLL_URL, { id: jobId });
+      let poll: JobPollResponse;
+      try {
+        poll = await this.request<JobPollResponse>('POST', POLL_URL, { id: jobId });
+      } catch (error) {
+        record('failed', `poll rejected: ${errorText(error)}`);
+        throw error;
+      }
+      polls++;
       const status = poll?.status;
 
       if (status === JOB_SUCCEEDED) {
+        record('ok');
         return poll.result ?? {};
       }
 
       if (status === JOB_FAILED) {
         const detail = failureDetail(poll.result);
+        record('failed', detail);
         throw new DanalockJobError(`${operation} failed: ${detail}`, isBusyMessage(detail));
       }
 
       // Created / InProgress / anything else transient — keep polling until the deadline.
     }
 
+    const seconds = Math.round(timeoutMs / 1000);
+    record('timeout', `no result after ${seconds}s`);
     throw new DanalockJobError(
-      `${operation} timed out after ${Math.round(this.timings.jobTimeoutMs / 1000)}s. ` +
+      `${operation} timed out after ${seconds}s. ` +
         'The Danabridge may be offline or out of Bluetooth range of the lock.',
     );
   }

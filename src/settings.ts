@@ -55,8 +55,13 @@ export const DEFAULTS = {
   requestTimeoutMs: 30_000,
   /** How often to poll a job for completion (ms). */
   jobPollIntervalMs: 1_000,
-  /** Give up on a single bridge job after this long (ms). Operations normally take 5-7s. */
+  /** Give up on a user-initiated bridge job after this long (ms). Operations normally take 5-7s. */
   jobTimeoutMs: 60_000,
+  /**
+   * Give up sooner on background reads (ms). A poll that has not landed by now is not going to,
+   * and waiting the full minute holds the bridge's queue for several poll intervals.
+   */
+  backgroundJobTimeoutMs: 25_000,
   /** Attempts when the bridge reports it is busy. */
   bridgeBusyRetries: 3,
   /** Base backoff between busy retries (ms); multiplied by attempt number. */
@@ -69,4 +74,6 @@ export const DEFAULTS = {
   probeBaseMs: 60_000,
   /** Ceiling on the probe interval (ms), so recovery is still noticed within half an hour. */
   probeMaxMs: 30 * 60_000,
+  /** How often to emit the per-bridge summary (ms). */
+  summaryIntervalMs: 5 * 60_000,
 } as const;

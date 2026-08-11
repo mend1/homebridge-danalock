@@ -24,8 +24,16 @@ const silentLog: ApiLogger = {
 const FAST = {
   jobPollIntervalMs: 5,
   jobTimeoutMs: 2_000,
+  backgroundJobTimeoutMs: 2_000,
   bridgeBusyBackoffMs: 5,
 };
+
+/** Captures log output so tests can assert on what an operator would actually see. */
+function recordingLog(): ApiLogger & { lines: string[] } {
+  const lines: string[] = [];
+  const push = (message: string) => lines.push(message);
+  return { lines, debug: push, info: push, warn: push, error: push };
+}
 
 let agent: MockAgent;
 /** Ordered log of requests, used to assert queueing behaviour. */
@@ -186,6 +194,125 @@ describe('execute/poll state machine', () => {
 
     await assert.rejects(() => newClient().getState(LOCK_A), /busy/i);
     assert.equal(polls, 1, `a busy bridge must be asked exactly once, not retried (got ${polls})`);
+  });
+});
+
+describe('diagnostics', () => {
+  const succeedingBridge = (): void => {
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Succeeded', result: { state: 'Locked' } })
+      .persist();
+  };
+
+  it('logs each operation with its bridge, outcome and duration', async () => {
+    mockToken();
+    succeedingBridge();
+
+    const log = recordingLog();
+    const client = new DanalockApiClient('user@example.com', 'secret', log, FAST);
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+
+    await client.getState(LOCK_A);
+
+    // Successes matter as much as failures: they are the baseline a bad bridge is judged against.
+    const line = log.lines.find((l) => l.includes('afi.lock.get-state') && l.includes('ok'));
+    assert.ok(line, `expected a per-operation line, got: ${JSON.stringify(log.lines)}`);
+    assert.match(line!, new RegExp(`bridge ${BRIDGE_1}`), 'the line must name the bridge, not just the lock');
+    assert.match(line!, /in \d+ms/, 'the line must record how long the operation took');
+  });
+
+  it('summarises per bridge, keeping bridges separate', async () => {
+    mockToken();
+    succeedingBridge();
+
+    const client = newClient();
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+    client.setBridgeForLock(LOCK_B, BRIDGE_2);
+
+    await client.getState(LOCK_A);
+    await client.getState(LOCK_B);
+    await client.getState(LOCK_B);
+
+    const summary = client.drainBridgeSummary();
+    assert.equal(summary.length, 2, 'one line per bridge that saw traffic');
+
+    const first = summary.find((l) => l.includes(BRIDGE_1))!;
+    const second = summary.find((l) => l.includes(BRIDGE_2))!;
+    assert.match(first, /1\/1 ok/);
+    assert.match(second, /2\/2 ok/, 'counts must not be pooled across bridges');
+
+    // Draining resets the window, so each summary covers only its own period.
+    assert.deepEqual(client.drainBridgeSummary(), []);
+  });
+
+  it('records the failure reason in the summary', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Failed', result: { bridge_server_status_text: 'ConnectionLost' } })
+      .persist();
+
+    const client = newClient();
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+
+    await assert.rejects(() => client.getState(LOCK_A));
+
+    const summary = client.drainBridgeSummary();
+    assert.match(summary[0], /0\/1 ok/);
+    assert.match(summary[0], /ConnectionLost/, 'the reason is what distinguishes an unstable link from a throttle');
+  });
+
+  it('never writes credentials or tokens to the log', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(500, 'upstream exploded').persist();
+
+    const log = recordingLog();
+    const client = new DanalockApiClient('user@example.com', 'hunter2', log, FAST);
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+
+    await assert.rejects(() => client.getState(LOCK_A));
+
+    const everything = log.lines.join('\n');
+    assert.ok(!everything.includes('hunter2'), 'the password must never reach the log');
+    assert.ok(!everything.includes('access-1'), 'the access token must never reach the log');
+    assert.ok(!/authorization/i.test(everything), 'auth headers must never reach the log');
+    // ...while still surfacing the server's own message, which is where a throttle would show up.
+    assert.match(everything, /upstream exploded/);
+  });
+
+  it('gives up sooner on a background read than on a user command', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
+    // A job that never completes — the bridge has effectively hung.
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'InProgress' })
+      .persist();
+
+    const client = new DanalockApiClient('user@example.com', 'secret', silentLog, {
+      jobPollIntervalMs: 5,
+      backgroundJobTimeoutMs: 120,
+      jobTimeoutMs: 600,
+    });
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+
+    // A hung background poll must not hold the bridge's queue for the full command timeout.
+    const backgroundStart = Date.now();
+    await assert.rejects(() => client.getState(LOCK_A), /timed out/);
+    const background = Date.now() - backgroundStart;
+
+    const commandStart = Date.now();
+    await assert.rejects(() => client.operate(LOCK_A, 'lock'), /timed out/);
+    const command = Date.now() - commandStart;
+
+    assert.ok(background < 400, `background read waited ${background}ms; expected the shorter timeout`);
+    assert.ok(command > background, `a user command (${command}ms) should be given more patience than a poll (${background}ms)`);
   });
 });
 
