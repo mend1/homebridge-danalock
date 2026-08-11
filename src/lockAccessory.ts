@@ -42,6 +42,17 @@ export class DanalockLockAccessory {
   /** Set while a user-initiated operation is running, so polling doesn't fight the command. */
   private operating = false;
 
+  /**
+   * Circuit breaker. Once a lock has failed repeatedly there is no value in polling it on the
+   * normal cadence — during a 14-hour outage that produced roughly ten thousand pointless requests.
+   * When open, scheduled polling stops and only occasional probes go out, backing off as the outage
+   * continues. It governs traffic only: HomeKit still shows "No Response", and user commands are
+   * always attempted.
+   */
+  private breakerOpen = false;
+  private probeCount = 0;
+  private nextProbeAt = 0;
+
   constructor(
     private readonly platform: DanalockPlatform,
     private readonly accessory: PlatformAccessory<LockContext>,
@@ -112,6 +123,7 @@ export class DanalockLockAccessory {
   // ---------------------------------------------------------------------------
 
   private readCurrentState(): CharacteristicValue {
+    this.requestProbeIfPaused();
     this.assertResponsive();
     return this.toHapState(this.currentState);
   }
@@ -237,6 +249,11 @@ export class DanalockLockAccessory {
       return;
     }
 
+    // While the breaker is open, only the scheduled probe gets through.
+    if (this.breakerOpen && Date.now() < this.nextProbeAt) {
+      return;
+    }
+
     await this.refreshState();
 
     if (this.batteryService && this.isBatteryDue()) {
@@ -356,17 +373,65 @@ export class DanalockLockAccessory {
       this.unresponsive = true;
       this.markUnresponsive();
     }
+
+    this.considerBreaker();
+  }
+
+  /** Opens the breaker once failures are clearly not transient, and schedules the next probe. */
+  private considerBreaker(): void {
+    if (this.failureStreak < DEFAULTS.breakerThreshold) {
+      return;
+    }
+
+    // Probe delay doubles per failed probe: 1, 2, 4, 8, 16, then capped at 30 minutes.
+    const delay = Math.min(DEFAULTS.probeBaseMs * 2 ** this.probeCount, DEFAULTS.probeMaxMs);
+    this.nextProbeAt = Date.now() + delay;
+    this.probeCount++;
+
+    if (!this.breakerOpen) {
+      this.breakerOpen = true;
+      this.platform.log.warn(
+        `Pausing scheduled polling for ${this.label} after ${this.failureStreak} consecutive failures; ` +
+          `retrying every ${Math.round(delay / 60_000)} min or so until it recovers. ` +
+          'Locking and unlocking from HomeKit still works and will resume polling if it succeeds.',
+      );
+    } else {
+      this.platform.log.debug(`${this.label} probe failed; next probe in ${Math.round(delay / 1000)}s.`);
+    }
+  }
+
+  /**
+   * Lets a HomeKit read bring a paused lock forward, so noticing recovery does not mean waiting out
+   * the backoff. Deduped: one Home app open reads four characteristics on this accessory.
+   */
+  private requestProbeIfPaused(): void {
+    if (!this.breakerOpen || this.nextProbeAt <= Date.now()) {
+      return;
+    }
+    this.nextProbeAt = Date.now();
+    this.platform.log.debug(`${this.label} was read from HomeKit; bringing its next probe forward.`);
   }
 
   private clearFailureStreak(): void {
     const wasUnresponsive = this.unresponsive;
+    const wasPaused = this.breakerOpen;
+
     this.failureStreak = 0;
     this.unresponsive = false;
+
+    // Any success closes the breaker — including one from a user command.
+    this.breakerOpen = false;
+    this.probeCount = 0;
+    this.nextProbeAt = 0;
 
     if (wasUnresponsive) {
       // Close the loop, otherwise the log leaves the impression it is still broken.
       this.platform.log.info(`${this.label} is responding again.`);
       this.warnedUnresponsive = false;
+    }
+
+    if (wasPaused) {
+      this.platform.log.info(`Resuming normal polling for ${this.label}.`);
     }
   }
 

@@ -166,24 +166,26 @@ describe('execute/poll state machine', () => {
     await assert.rejects(() => newClient().getState(LOCK_A), /GatewayTimeout/);
   });
 
-  it('retries when the bridge reports itself busy, then succeeds', async () => {
+  /**
+   * Retrying a busy bridge used to turn one busy round into ~25s of occupation, amplifying the
+   * contention it was reacting to. The caller backs off instead.
+   */
+  it('does NOT retry when the bridge reports itself busy', async () => {
     mockToken();
-    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).times(2);
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
 
-    let attempt = 0;
+    let polls = 0;
     agent
       .get(BRIDGE_ORIGIN)
       .intercept({ path: '/bridge/v1/poll', method: 'POST' })
       .reply(200, () => {
-        attempt++;
-        return attempt === 1
-          ? { id: 'job-1', status: 'Failed', result: { bridge_server_status_text: 'bridgebusy' } }
-          : { id: 'job-1', status: 'Succeeded', result: { state: 'Unlocked' } };
+        polls++;
+        return { id: 'job-1', status: 'Failed', result: { bridge_server_status_text: 'bridgebusy' } };
       })
-      .times(2);
+      .persist();
 
-    assert.equal(await newClient().getState(LOCK_A), 'Unlocked');
-    assert.equal(attempt, 2, 'should have retried once after the busy response');
+    await assert.rejects(() => newClient().getState(LOCK_A), /busy/i);
+    assert.equal(polls, 1, `a busy bridge must be asked exactly once, not retried (got ${polls})`);
   });
 });
 
@@ -307,6 +309,67 @@ describe('per-bridge serialisation', () => {
       'op:afi.lock.operate', // LOCK_B — user command, jumped ahead
       'op:afi.lock.get-state', // LOCK_B — background poll, ran last
     ]);
+  });
+
+  /**
+   * The ceiling that keeps a bridge usable by the Danalock app: one background operation per
+   * bridge per interval, no matter which scheduler asked or how many locks sit behind it.
+   */
+  it('spaces background operations on a bridge by the configured gap', async () => {
+    mockToken();
+    const stamps: number[] = [];
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/execute', method: 'POST' })
+      .reply(200, () => {
+        stamps.push(Date.now());
+        return { id: 'job-1' };
+      })
+      .persist();
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Succeeded', result: { state: 'Locked' } })
+      .persist();
+
+    const client = newClient();
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+    client.setBridgeForLock(LOCK_B, BRIDGE_1);
+    client.setMinOperationGap(120);
+
+    // Two locks behind one bridge must share its budget, not double its load.
+    await client.getState(LOCK_A);
+    await client.getState(LOCK_B);
+    await client.getState(LOCK_A);
+
+    assert.equal(stamps.length, 3);
+    for (let i = 1; i < stamps.length; i++) {
+      const gap = stamps[i] - stamps[i - 1];
+      assert.ok(gap >= 100, `operations ${i} and ${i + 1} were ${gap}ms apart; expected at least the configured gap`);
+    }
+  });
+
+  it('never makes a user command wait for the cooldown', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Succeeded', result: { state: 'Locked' } })
+      .persist();
+
+    const client = newClient();
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+    client.setMinOperationGap(5_000);
+
+    await client.getState(LOCK_A); // starts the cooldown
+
+    const started = Date.now();
+    await client.operate(LOCK_A, 'lock');
+    const elapsed = Date.now() - started;
+
+    // Someone is standing at the door; a throttle must not hold them up.
+    assert.ok(elapsed < 1_000, `user command waited ${elapsed}ms behind the cooldown`);
   });
 
   it('does not wedge a bridge queue when an operation fails', async () => {

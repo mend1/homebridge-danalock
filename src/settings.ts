@@ -63,4 +63,10 @@ export const DEFAULTS = {
   bridgeBusyBackoffMs: 2_000,
   /** Warn that a battery reading is stale after this long without a successful read (ms). */
   staleBatteryWarnMs: 24 * 60 * 60 * 1_000,
+  /** Consecutive failed state reads before scheduled polling stops for a lock. */
+  breakerThreshold: 5,
+  /** First probe delay once the breaker opens (ms); doubles per failed probe. */
+  probeBaseMs: 60_000,
+  /** Ceiling on the probe interval (ms), so recovery is still noticed within half an hour. */
+  probeMaxMs: 30 * 60_000,
 } as const;

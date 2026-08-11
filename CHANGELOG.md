@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-beta.0] - 2026-08-11
+
+Prerelease, published to the `beta` tag. Install with
+`npm install -g homebridge-danalock@beta`.
+
+Limits how much of a Danabridge's capacity the plugin can consume. Prompted by an incident in which
+the plugin issued an estimated 10,000+ bridge jobs over 14 hours against bridges that were failing
+continuously; afterwards, bridge-routed requests failed even with Homebridge stopped, so the
+resulting state (a server-side throttle, a job backlog, or both) outlived the traffic that caused
+it. Nothing previously stopped the plugin generating that volume again.
+
+### Changed
+
+- **A busy bridge is no longer retried.** Retrying up to three times turned one busy round into
+  roughly 25 seconds of bridge occupation and amplified the very contention it was reacting to.
+  The failure is now reported immediately and the caller backs off. Retries remain for genuinely
+  transient transport errors.
+- **`pollInterval` now doubles as the bridge's budget:** at most one background operation per
+  bridge per interval, shared across every lock behind that bridge and across state, battery, and
+  confirmation reads. Previously the interval was per lock and said nothing about total bridge
+  load. The minimum is raised from 5s to 10s.
+- User-initiated locking and unlocking bypasses the budget entirely and is never delayed by it.
+
+### Added
+
+- **Circuit breaker.** After five consecutive failed state reads, scheduled polling for that lock
+  stops and only occasional probes go out, backing off 1, 2, 4, 8, 16 minutes and capping at 30.
+  Any success — including a lock or unlock you trigger — resumes normal polling. Against the
+  incident above this is roughly 30 requests rather than 10,000, while still noticing recovery
+  within half an hour. Reading the lock in the Home app brings the next probe forward.
+- The breaker governs traffic only. HomeKit still shows "No Response" when state cannot be
+  verified, and commands are always attempted even while polling is paused.
+
 ## [0.1.1] - 2026-08-10
 
 Diagnostics and logging fixes, all found while investigating a real outage in which both
@@ -69,5 +102,6 @@ First public release.
   outside HomeKit are detected by polling, as the API offers no push notifications.
 - Built on unofficial, undocumented API endpoints, which Danalock could change at any time.
 
+[0.2.0-beta.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.0
 [0.1.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.0

@@ -110,6 +110,16 @@ export class DanalockApiClient {
   /** Queue keys currently draining, so only one task per bridge runs at a time. */
   private readonly draining = new Set<string>();
 
+  /** queue key -> when that bridge last finished an operation, for the cooldown. */
+  private readonly lastOperationAt = new Map<string, number>();
+
+  /**
+   * Minimum gap between *background* operations on one bridge. Set from the poll interval, so the
+   * setting means "at most one background operation per bridge per interval" no matter how many
+   * locks sit behind it or which of the five schedulers asked. User commands are exempt.
+   */
+  private minOperationGapMs = 0;
+
   /** Guards against concurrent token refreshes. */
   private authInFlight: Promise<void> | null = null;
 
@@ -344,6 +354,14 @@ export class DanalockApiClient {
     return null;
   }
 
+  /**
+   * Sets the minimum gap between background operations on any one bridge. Applied per bridge, not
+   * per lock, so a bridge's load does not scale with the number of locks behind it.
+   */
+  setMinOperationGap(milliseconds: number): void {
+    this.minOperationGapMs = Math.max(0, milliseconds);
+  }
+
   /** Registers which bridge a lock sits behind, so its operations queue on the right key. */
   setBridgeForLock(lockSerial: string, bridgeSerial: string | null): void {
     if (bridgeSerial) {
@@ -404,26 +422,45 @@ export class DanalockApiClient {
     args?: string[],
     priority = false,
   ): Promise<Record<string, unknown>> {
-    return this.enqueue(this.queueKey(lockSerial), async () => {
-      let lastError: DanalockJobError | undefined;
+    const key = this.queueKey(lockSerial);
 
-      for (let attempt = 1; attempt <= this.timings.bridgeBusyRetries; attempt++) {
-        try {
-          return await this.executeAndPoll(lockSerial, operation, args);
-        } catch (error) {
-          if (error instanceof DanalockJobError && error.busy && attempt < this.timings.bridgeBusyRetries) {
-            const delay = this.timings.bridgeBusyBackoffMs * attempt;
-            this.log.debug(`Bridge busy for ${lockSerial} (${operation}); retrying in ${delay}ms (attempt ${attempt}).`);
-            lastError = error;
-            await sleep(delay);
-            continue;
-          }
-          throw error;
+    return this.enqueue(key, async () => {
+      // Background work waits out the per-bridge cooldown; user commands never do.
+      if (!priority) {
+        const wait = this.cooldownRemaining(key);
+        if (wait > 0) {
+          this.log.debug(`Holding ${operation} for ${lockSerial} ${wait}ms to stay within the bridge's budget.`);
+          await sleep(wait);
         }
       }
 
-      throw lastError ?? new DanalockJobError(`Operation ${operation} failed for ${lockSerial}.`);
+      try {
+        return await this.executeAndPoll(lockSerial, operation, args);
+      } catch (error) {
+        // Do NOT retry a busy bridge. Retrying turns one busy round into several operations'
+        // worth of occupation and amplifies exactly the contention it is reacting to; the caller
+        // backs off instead.
+        if (error instanceof DanalockJobError && error.busy) {
+          this.log.debug(`Bridge busy for ${lockSerial} (${operation}); backing off rather than retrying.`);
+        }
+        throw error;
+      } finally {
+        // Stamped on completion, success or not, so a failing bridge is not hammered either.
+        this.lastOperationAt.set(key, Date.now());
+      }
     }, priority);
+  }
+
+  /** Milliseconds a background operation must wait before this bridge may be used again. */
+  private cooldownRemaining(key: string): number {
+    if (this.minOperationGapMs <= 0) {
+      return 0;
+    }
+    const last = this.lastOperationAt.get(key);
+    if (last === undefined) {
+      return 0;
+    }
+    return Math.max(0, last + this.minOperationGapMs - Date.now());
   }
 
   /**

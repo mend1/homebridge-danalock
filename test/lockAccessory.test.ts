@@ -255,6 +255,128 @@ describe('state polling failures', () => {
   });
 });
 
+describe('circuit breaker', () => {
+  /**
+   * The 14-hour outage produced roughly ten thousand pointless requests. After a handful of
+   * failures the plugin should stop polling on the normal cadence and probe occasionally instead.
+   */
+  it('stops scheduled polling once a lock has clearly failed', async () => {
+    let reads = 0;
+    const harness = buildHarness({
+      getState: async () => {
+        reads++;
+        throw new Error('BridgeNotAttached');
+      },
+    });
+
+    for (let i = 0; i < 30; i++) {
+      await harness.accessory.refresh();
+    }
+
+    // 5 failures open the breaker; the rest are suppressed until the first probe is due.
+    assert.equal(reads, 5, `expected polling to stop after the breaker opened (got ${reads} reads)`);
+    assert.ok(
+      harness.logs.some((entry) => entry.level === 'warn' && /Pausing scheduled polling/.test(entry.message)),
+      'opening the breaker should be logged',
+    );
+  });
+
+  it('resumes normal polling as soon as a probe succeeds', async () => {
+    let failing = true;
+    let reads = 0;
+    const harness = buildHarness({
+      getState: async () => {
+        reads++;
+        if (failing) {
+          throw new Error('BridgeNotAttached');
+        }
+        return 'Locked';
+      },
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await harness.accessory.refresh();
+    }
+    assert.equal(reads, 5, 'polling should be paused');
+
+    // A HomeKit read brings the probe forward, standing in for the elapsed backoff. The read
+    // itself still throws, because the lock is showing as unresponsive — the probe is requested
+    // before that check, which is the point.
+    failing = false;
+    try {
+      harness.lockService.getCharacteristic(Characteristic.LockCurrentState).getHandler!();
+    } catch {
+      // expected
+    }
+    await harness.accessory.refresh();
+
+    assert.equal(reads, 6, 'the probe should have gone out');
+    assert.ok(
+      harness.logs.some((entry) => entry.level === 'info' && /Resuming normal polling/.test(entry.message)),
+      'recovery should be logged',
+    );
+
+    // ...and the cadence is back to normal.
+    await harness.accessory.refresh();
+    assert.equal(reads, 7);
+  });
+
+  it('deduplicates probes across the characteristics read in one Home app open', async () => {
+    let reads = 0;
+    const harness = buildHarness({
+      getState: async () => {
+        reads++;
+        throw new Error('BridgeNotAttached');
+      },
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await harness.accessory.refresh();
+    }
+    assert.equal(reads, 5);
+
+    // Opening the Home app reads several characteristics on this accessory.
+    for (let i = 0; i < 4; i++) {
+      try {
+        harness.lockService.getCharacteristic(Characteristic.LockCurrentState).getHandler!();
+      } catch {
+        // Expected: the lock is unresponsive, so the read throws.
+      }
+    }
+    await harness.accessory.refresh();
+
+    assert.equal(reads, 6, 'four reads should bring forward one probe, not four');
+  });
+
+  it('still attempts a user command while polling is paused, and resumes on success', async () => {
+    let stateFailing = true;
+    const harness = buildHarness({
+      getState: async () => {
+        if (stateFailing) {
+          throw new Error('BridgeNotAttached');
+        }
+        return 'Locked';
+      },
+      operate: async () => undefined,
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await harness.accessory.refresh();
+    }
+
+    // The door must still be operable when the plugin has stopped polling.
+    stateFailing = false;
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(readCurrentState(harness), Characteristic.LockCurrentState.SECURED);
+    assert.ok(
+      harness.logs.some((entry) => entry.level === 'info' && /Resuming normal polling/.test(entry.message)),
+      'a successful command should resume polling',
+    );
+  });
+});
+
 describe('operating the lock from HomeKit', () => {
   /**
    * HomeKit gives a write handler 3s before warning and 9s before it gives up with

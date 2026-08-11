@@ -71,6 +71,9 @@ export class DanalockPlatform implements DynamicPlatformPlugin {
     }
 
     this.api2 = new DanalockApiClient(config.username, config.password, this.log);
+    // One background operation per bridge per poll interval, whatever asked for it. This is the
+    // ceiling that keeps the bridge usable by the Danalock app.
+    this.api2.setMinOperationGap(this.options.pollInterval * 1000);
 
     this.api.on('didFinishLaunching', () => {
       void this.discoverLocks();

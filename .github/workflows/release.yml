@@ -35,7 +35,8 @@ jobs:
       # here, before anything is published.
       - run: npm test
 
-      - name: Check package.json version matches the release tag
+      - name: Check version and pick the npm dist-tag
+        id: release
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -46,8 +47,16 @@ jobs:
                  "Bump the version, or retag, so they agree."
             exit 1
           fi
-          echo "Publishing $PKG_VERSION"
+          # Derive the dist-tag from the version itself, so a prerelease can never be published
+          # as `latest` by mistake: 0.2.0-beta.0 -> beta, 0.2.0 -> latest.
+          if echo "$PKG_VERSION" | grep -q -- '-'; then
+            echo "dist_tag=beta" >> "$GITHUB_OUTPUT"
+            echo "Publishing $PKG_VERSION to the beta tag (latest is left untouched)"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "Publishing $PKG_VERSION to latest"
+          fi
 
       # --provenance is explicit on purpose: it is documented as automatic under
       # OIDC but is not reliably applied without the flag.
-      - run: npm publish --provenance
+      - run: npm publish --provenance --tag ${{ steps.release.outputs.dist_tag }}
