@@ -349,6 +349,37 @@ describe('per-bridge serialisation', () => {
     }
   });
 
+  /**
+   * The cooldown is a *bridge* budget, not an account one. Bridges are independent hardware, so one
+   * being busy must not hold up another.
+   *
+   * Guards a silent regression: keying the cooldown on anything coarser — the account, a global —
+   * would halve throughput for anyone with more than one bridge while raising no error and logging
+   * nothing. Without this test, the same-bridge spacing test above would still pass.
+   */
+  it('applies the cooldown per bridge, so a busy bridge does not hold up another', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Succeeded', result: { state: 'Locked' } })
+      .persist();
+
+    const client = newClient();
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+    client.setBridgeForLock(LOCK_B, BRIDGE_2);
+    client.setMinOperationGap(5_000);
+
+    await client.getState(LOCK_A); // starts BRIDGE_1's cooldown
+
+    const started = Date.now();
+    await client.getState(LOCK_B); // different bridge — must not wait on BRIDGE_1
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed < 1_000, `a read on a second bridge waited ${elapsed}ms behind the first bridge's cooldown`);
+  });
+
   it('never makes a user command wait for the cooldown', async () => {
     mockToken();
     agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();
