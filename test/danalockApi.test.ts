@@ -70,16 +70,16 @@ describe('authentication', () => {
       .get(API_ORIGIN)
       .intercept({ path: '/locks/v1', method: 'GET' })
       .reply(200, [
-        { name: 'Front Door', afi: { serial_number: LOCK_A, device_type: 'danalockv3' } },
-        { name: 'Back Door', afi: { serial_number: LOCK_B, device_type: 'danalockv3' } },
+        { name: 'Lock One', afi: { serial_number: LOCK_A, device_type: 'danalockv3' } },
+        { name: 'Lock Two', afi: { serial_number: LOCK_B, device_type: 'danalockv3' } },
         { name: 'Broken entry with no serial' },
       ]);
 
     const locks = await newClient().getLocks();
 
     assert.deepEqual(locks, [
-      { serial: LOCK_A, name: 'Front Door' },
-      { serial: LOCK_B, name: 'Back Door' },
+      { serial: LOCK_A, name: 'Lock One' },
+      { serial: LOCK_B, name: 'Lock Two' },
     ]);
   });
 

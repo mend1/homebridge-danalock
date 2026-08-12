@@ -82,7 +82,7 @@ class FakeService {
 
 class FakeAccessory {
   readonly services = new Map<object, FakeService>();
-  displayName = 'Front Door';
+  displayName = 'Lock One';
 
   constructor(public context: LockContext) {
     this.services.set(Service.AccessoryInformation, new FakeService());
@@ -151,7 +151,7 @@ function buildHarness(options: {
     scheduleConfirmation: () => undefined,
   } as unknown as DanalockPlatform;
 
-  const fakeAccessory = new FakeAccessory({ serial: '11:11:11:11:11:11', name: 'Front Door' });
+  const fakeAccessory = new FakeAccessory({ serial: '11:11:11:11:11:11', name: 'Lock One' });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const accessory = new DanalockLockAccessory(platform, fakeAccessory as any);
 
@@ -508,7 +508,7 @@ describe('battery service', () => {
 
   /**
    * A failing battery read used to leave the lock permanently "due", so it retried on every poll
-   * cycle — observed in the wild at ~18s intervals against a configured hour, doubling the load on
+   * cycle — roughly every 18s against a configured hour, doubling the load on
    * an already-struggling bridge.
    */
   it('backs off failed battery reads instead of retrying every poll', async () => {

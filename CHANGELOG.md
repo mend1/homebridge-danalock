@@ -60,8 +60,8 @@ diagnosable. Previously released as `0.2.0-beta.0` and `0.2.0-beta.1`.
 
 ## [0.2.0-beta.1] - 2026-08-11
 
-Prerelease. Diagnostics, prompted by one Danabridge misbehaving while another on the same account
-and network stayed healthy. Enable Homebridge debug mode to see the new output.
+Prerelease. Diagnostics for identifying an unreliable Danabridge. Enable Homebridge debug mode to
+see the new output.
 
 ### Added
 
@@ -87,11 +87,8 @@ and network stayed healthy. Enable Homebridge debug mode to see the new output.
 Prerelease, published to the `beta` tag. Install with
 `npm install -g homebridge-danalock@beta`.
 
-Limits how much of a Danabridge's capacity the plugin can consume. Prompted by an incident in which
-the plugin issued an estimated 10,000+ bridge jobs over 14 hours against bridges that were failing
-continuously; afterwards, bridge-routed requests failed even with Homebridge stopped, so the
-resulting state (a server-side throttle, a job backlog, or both) outlived the traffic that caused
-it. Nothing previously stopped the plugin generating that volume again.
+Limits how much of a Danabridge's capacity the plugin can consume. Polling a bridge that is failing
+could previously generate thousands of requests an hour indefinitely, with nothing to stop it.
 
 ### Changed
 
@@ -109,25 +106,24 @@ it. Nothing previously stopped the plugin generating that volume again.
 
 - **Circuit breaker.** After five consecutive failed state reads, scheduled polling for that lock
   stops and only occasional probes go out, backing off 1, 2, 4, 8, 16 minutes and capping at 30.
-  Any success — including a lock or unlock you trigger — resumes normal polling. Against the
-  incident above this is roughly 30 requests rather than 10,000, while still noticing recovery
-  within half an hour. Reading the lock in the Home app brings the next probe forward.
+  Any success — including a lock or unlock you trigger — resumes normal polling. Over a long
+  outage that is a few dozen requests rather than thousands, while still noticing recovery within
+  half an hour. Reading the lock in the Home app brings the next probe forward.
 - The breaker governs traffic only. HomeKit still shows "No Response" when state cannot be
   verified, and commands are always attempted even while polling is paused.
 
 ## [0.1.1] - 2026-08-10
 
-Diagnostics and logging fixes, all found while investigating a real outage in which both
-Danabridges lost their connection to the Danalock cloud. None of these caused the outage, but two
-of them made it noisier and put avoidable extra load on the failing bridges.
+Diagnostics and logging fixes. None of these caused failures, but two of them made an outage
+noisier and put avoidable extra load on a bridge that was already struggling.
 
 ### Fixed
 
 - **Failed battery reads no longer retry every poll cycle.** Scheduling was based on the last
   *successful* read, so once a battery read started failing the lock looked perpetually due and was
-  retried on every cycle — roughly every 18 seconds against a configured hour, and over a hundred
-  consecutive times in one observed case. That doubled the request load on a bridge that was
-  already struggling. Scheduling is now based on the last *attempt*, successful or not.
+  retried on every cycle — roughly every 18 seconds against a configured hour, and indefinitely
+  while the failure persisted. That doubled the request load on a bridge that was already
+  struggling. Scheduling is now based on the last *attempt*, successful or not.
 - **An unreadable battery is warned about once per outage, not once per attempt.** State reads
   already behaved this way; battery reads did not, producing hundreds of identical warnings.
   Recovery is now logged too.
