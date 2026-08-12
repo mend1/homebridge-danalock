@@ -23,6 +23,10 @@ diagnosable. Previously released as `0.2.0-beta.0` and `0.2.0-beta.1`.
 - **Background reads give up after 25s instead of 60s.** A hung poll held its bridge's queue for a
   full minute — several poll intervals — and a job that has not landed by then is not going to.
   User-initiated locking and unlocking keeps the full 60s.
+- The **State Poll Interval** setting is now a text box in the Homebridge UI rather than a slider.
+  Having both a minimum and a maximum made the UI render a range control spanning 10 to 3600, so
+  choosing a precise value such as 15 or 30 meant dragging across thousands of positions. The
+  bounds still validate.
 
 ### Added
 

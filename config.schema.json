@@ -36,6 +36,9 @@
         "default": 10,
         "minimum": 10,
         "maximum": 3600,
+        "x-schema-form": {
+          "type": "number"
+        },
         "description": "Also acts as the Danabridge's budget: at most one background operation per bridge per interval, shared by every lock behind that bridge and by state, battery, and confirmation reads alike. Controls how quickly changes made outside HomeKit are noticed. Each read costs a 5-7s round-trip to the lock, so shorter intervals leave the bridge less headroom for the Danalock app; raise this if you see 'Busy' in the log. Locking and unlocking from HomeKit is never delayed by this."
       },
       "batteryPollInterval": {
