@@ -4,6 +4,56 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-12
+
+Limits how much of a Danabridge's capacity the plugin can consume, and makes a troublesome bridge
+diagnosable. Previously released as `0.2.0-beta.0` and `0.2.0-beta.1`.
+
+### Changed
+
+- **`pollInterval` is now also the bridge's budget:** at most one background operation per bridge
+  per interval, shared by every lock behind that bridge and by state, battery and confirmation
+  reads alike. Previously it was per lock and said nothing about a bridge's total load, so load
+  scaled with the number of locks. If you have several locks on one bridge they now share that
+  budget, so each is polled less often. Minimum raised from 5s to 10s.
+- **A busy bridge is no longer retried.** Retrying up to three times turned one busy round into
+  roughly 25 seconds of bridge occupation and amplified the contention it was reacting to. The
+  failure is reported immediately and the caller backs off. Retries remain for genuinely transient
+  transport errors.
+- **Background reads give up after 25s instead of 60s.** A hung poll held its bridge's queue for a
+  full minute — several poll intervals — and a job that has not landed by then is not going to.
+  User-initiated locking and unlocking keeps the full 60s.
+
+### Added
+
+- **Circuit breaker.** After five consecutive failed state reads, scheduled polling for that lock
+  pauses and only occasional probes go out, backing off 1, 2, 4, 8, 16 minutes and capping at 30.
+  Any success resumes normal polling, including a lock or unlock you trigger. Reading the lock in
+  the Home app brings the next probe forward.
+- **Diagnostics at debug level.** A line per bridge operation — bridge, lock, operation, outcome,
+  duration and poll count — plus a per-bridge summary every five minutes giving successes over
+  attempts, failures grouped by reason, and min/median/max duration. Successes are included
+  because a healthy bridge's timings are the baseline that makes a troublesome one legible.
+- HTTP error responses now include a short excerpt of the server's body. Credentials, tokens and
+  auth headers are never logged, and a test asserts it.
+
+### Fixed
+
+- **`unresponsiveThreshold` above 5 no longer delays "No Response" by up to hours.** The circuit
+  breaker paused polling at a fixed five failures, after which the failure count only advanced on
+  probes backing off to 30 minutes — so a threshold of 10 took roughly half an hour to reach, and
+  the maximum of 20 took several hours, with HomeKit displaying a confident and unverifiable lock
+  state throughout. Polling now never pauses before the lock has been marked unresponsive.
+- The runtime minimum for `pollInterval` was still 5s while the settings UI enforced 10s, so a
+  hand-edited `config.json` could set a value the UI rejects. Both are now 10s.
+
+### Unchanged by design
+
+- Locking and unlocking from HomeKit bypasses the budget, is never delayed by it, and is always
+  attempted even while polling is paused.
+- HomeKit still shows "No Response" when a lock's state cannot be verified. The circuit breaker
+  governs traffic, not what is displayed.
+
 ## [0.2.0-beta.1] - 2026-08-11
 
 Prerelease. Diagnostics, prompted by one Danabridge misbehaving while another on the same account
@@ -126,6 +176,7 @@ First public release.
   outside HomeKit are detected by polling, as the API offers no push notifications.
 - Built on unofficial, undocumented API endpoints, which Danalock could change at any time.
 
+[0.2.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.1
 [0.2.0-beta.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.0
 [0.1.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.1.1

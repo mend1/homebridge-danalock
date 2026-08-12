@@ -281,6 +281,35 @@ describe('circuit breaker', () => {
     );
   });
 
+  /**
+   * The breaker must not open before the lock is showing "No Response". Once it does, the failure
+   * count only advances on probes that back off to 30 minutes, so a higher unresponsiveThreshold
+   * would leave HomeKit asserting a confident, unverifiable state for a very long time.
+   */
+  it('never pauses polling before the lock is marked unresponsive', async () => {
+    let reads = 0;
+    const harness = buildHarness({
+      // Higher than the breaker's own threshold of 5.
+      unresponsiveThreshold: 8,
+      getState: async () => {
+        reads++;
+        throw new Error('BridgeNotAttached');
+      },
+    });
+
+    for (let i = 0; i < 30; i++) {
+      await harness.accessory.refresh();
+    }
+
+    assert.equal(reads, 8, `polling should continue until the unresponsive threshold (got ${reads} reads)`);
+    // By the time polling pauses, HomeKit is already being told the state cannot be verified.
+    assert.throws(() => readCurrentState(harness), HapStatusError);
+    assert.ok(
+      harness.logs.some((entry) => entry.level === 'warn' && /Pausing scheduled polling/.test(entry.message)),
+      'the breaker should still open, just not before the lock is unresponsive',
+    );
+  });
+
   it('resumes normal polling as soon as a probe succeeds', async () => {
     let failing = true;
     let reads = 0;

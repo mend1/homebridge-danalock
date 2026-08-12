@@ -46,7 +46,9 @@ export const UNKNOWN_BRIDGE_KEY = '__unknown_bridge__';
 /** Timing defaults (seconds unless noted). */
 export const DEFAULTS = {
   pollInterval: 10,
-  minPollInterval: 5,
+  // Matches config.schema.json's minimum. Below this the ~6s operation leaves the bridge almost
+  // no idle time, so the setting would promise something the transport cannot deliver.
+  minPollInterval: 10,
   batteryPollInterval: 3600,
   minBatteryPollInterval: 300,
   lowBatteryThreshold: 20,

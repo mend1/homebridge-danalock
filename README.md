@@ -74,7 +74,7 @@ Configure through the Homebridge UI, or add a platform block to `config.json`:
 | --- | --- | --- | --- |
 | `username` | string | — | **Required.** Your Danalock account email. |
 | `password` | string | — | **Required.** Your Danalock account password. Never written to the log. |
-| `pollInterval` | number | `10` | Seconds between state-refresh rounds. Controls how quickly changes made *outside* HomeKit are noticed. Minimum 5. |
+| `pollInterval` | number | `10` | Seconds between state-refresh rounds, and also the Danabridge's budget: at most one background operation per bridge per interval, shared by every lock behind that bridge. Controls how quickly changes made *outside* HomeKit are noticed. Minimum 10. Locking and unlocking is never delayed by it. |
 | `batteryPollInterval` | number | `3600` | Seconds between battery reads. Minimum 300. |
 | `showBattery` | boolean | `true` | Report the battery level on the lock accessory. |
 | `lowBatteryThreshold` | number | `20` | Battery percentage at or below which HomeKit shows a Low Battery warning. |
@@ -129,7 +129,7 @@ Homebridge → Danalock cloud → your Danabridge → Bluetooth → the lock
 ```
 
 The plugin authenticates against the Danalock cloud, discovers your locks, and issues operations
-through the bridge service, polling each job until it completes.
+through the bridge service, checking each submitted job until it completes.
 
 ### Concurrency
 
@@ -139,9 +139,48 @@ operations **per bridge**:
 
 - Locks behind **different** bridges are polled and operated **in parallel**.
 - Locks sharing **one** bridge queue up behind each other automatically.
+- The plugin uses at most **one background operation per bridge per `pollInterval`**, leaving the
+  rest of the bridge's time free for the Danalock app. Locking and unlocking bypasses this
+  entirely.
+- If a lock fails five state reads in a row, scheduled polling for it **pauses** and only
+  occasional probes go out, backing off to at most 30 minutes. Any success resumes it — the pause
+  never prevents you operating the door.
 
 If a lock's bridge can't be determined, the plugin logs a warning and falls back to serialising
 that lock with everything else — slower, but it never hammers a bridge.
+
+### Diagnosing a troublesome bridge
+
+Run Homebridge in debug mode — `sudo hb-service restart -D`, or Homebridge Debug Mode in the UI —
+and the plugin logs a line for every bridge operation, plus a summary for each bridge every five
+minutes:
+
+```
+[bridge aa:bb:cc:dd:ee:ff] afi.lock.get-state on 11:22:33:44:55:66: ok in 5820ms after 6 poll(s)
+[bridge aa:bb:cc:dd:ee:ff] 18/20 ok, 2 failed (ConnectionLost×2); duration min/med/max 4980/5820/9100ms
+```
+
+Successes are included on purpose: a healthy bridge's timings are the baseline that makes a
+troublesome one legible. With more than one bridge, comparing their summaries side by side over the
+same window is usually enough to identify which is at fault.
+
+**Two different things are called "polling" here**, and it helps to keep them apart:
+
+- **`pollInterval`** is how often the plugin re-reads a lock's state — one scheduled refresh per
+  interval.
+- **`after 6 poll(s)`** in the logs counts something else: having submitted a single operation, how
+  many times the plugin asked the cloud whether that job had finished. These are checks against
+  Danalock's cloud, not extra work for the Danabridge.
+
+The relationship between the two numbers is diagnostic. A failure `after 1 poll` means the cloud
+rejected the job almost immediately — typically the Danabridge is not connected to it. A timeout
+`after 25 poll(s)` means the opposite: the cloud accepted the job and the bridge never answered,
+which points at the Bluetooth link between bridge and lock rather than the bridge's network
+connection.
+
+`Pausing scheduled polling for "<lock>"` means that lock failed five state reads in a row, so the
+plugin has backed off to occasional probes. It resumes on the first success, and locking and
+unlocking still work while polling is paused.
 
 ## Known limitations
 

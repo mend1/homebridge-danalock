@@ -379,7 +379,12 @@ export class DanalockLockAccessory {
 
   /** Opens the breaker once failures are clearly not transient, and schedules the next probe. */
   private considerBreaker(): void {
-    if (this.failureStreak < DEFAULTS.breakerThreshold) {
+    // Never pause polling before the lock has been marked "No Response". Once the breaker opens
+    // the failure count only advances on probes, which back off to 30 minutes — so a threshold
+    // above the breaker's would leave HomeKit showing a confident, unverifiable state for half an
+    // hour or more. Displaying "Locked" for a door that may be open is the problem this exists to
+    // prevent, so the breaker waits for the higher of the two.
+    if (this.failureStreak < Math.max(DEFAULTS.breakerThreshold, this.platform.options.unresponsiveThreshold)) {
       return;
     }
 
