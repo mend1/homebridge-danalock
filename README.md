@@ -78,7 +78,7 @@ Configure through the Homebridge UI, or add a platform block to `config.json`:
 | `batteryPollInterval` | number | `3600` | Seconds between battery reads. Minimum 300. |
 | `showBattery` | boolean | `true` | Report the battery level on the lock accessory. |
 | `lowBatteryThreshold` | number | `20` | Battery percentage at or below which HomeKit shows a Low Battery warning. |
-| `unresponsiveThreshold` | number | `3` | Consecutive failed state reads before the lock shows as **No Response**. |
+| `unresponsiveThreshold` | number | `3` | Consecutive failed state reads before the lock shows as **No Response**. Also gates when scheduled polling pauses — see [Concurrency](#concurrency) — so raising it keeps the plugin polling a failing lock for longer. |
 | `locks` | array | all | Optional filter. Include or exclude specific locks by name or serial. |
 
 ### Filtering which locks appear
@@ -142,9 +142,10 @@ operations **per bridge**:
 - The plugin uses at most **one background operation per bridge per `pollInterval`**, leaving the
   rest of the bridge's time free for the Danalock app. Locking and unlocking bypasses this
   entirely.
-- If a lock fails five state reads in a row, scheduled polling for it **pauses** and only
-  occasional probes go out, backing off to at most 30 minutes. Any success resumes it — the pause
-  never prevents you operating the door.
+- After five consecutive failed state reads — or `unresponsiveThreshold`, if you have set it
+  higher — scheduled polling for that lock **pauses** and only occasional probes go out, backing
+  off to at most 30 minutes. Any success resumes it. Polling never pauses while the lock is still
+  reporting a state, and the pause never prevents you operating the door.
 
 If a lock's bridge can't be determined, the plugin logs a warning and falls back to serialising
 that lock with everything else — slower, but it never hammers a bridge.
@@ -178,9 +179,11 @@ rejected the job almost immediately — typically the Danabridge is not connecte
 which points at the Bluetooth link between bridge and lock rather than the bridge's network
 connection.
 
-`Pausing scheduled polling for "<lock>"` means that lock failed five state reads in a row, so the
-plugin has backed off to occasional probes. It resumes on the first success, and locking and
-unlocking still work while polling is paused.
+`Pausing scheduled polling for "<lock>"` means that lock has failed enough consecutive state reads
+to be treated as down — five, or your `unresponsiveThreshold` if that is higher — so the plugin has
+backed off to occasional probes. By that point the lock is already showing **No Response** in the
+Home app, so the pause never hides a lock whose state is still being reported. It resumes on the
+first success, and locking and unlocking still work while polling is paused.
 
 ## Known limitations
 
