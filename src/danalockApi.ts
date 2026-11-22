@@ -41,10 +41,21 @@ export class DanalockApiError extends Error {}
 
 /** A bridge job failed, timed out, or returned an unusable result. */
 export class DanalockJobError extends Error {
-  constructor(message: string, readonly busy = false) {
+  constructor(
+    message: string,
+    readonly busy = false,
+    /**
+     * The lock reported `NothingChanged`: it was asked to move to the position it was already in.
+     * The bridge and lock both responded correctly, so this is not a communication failure.
+     */
+    readonly nothingChanged = false,
+  ) {
     super(message);
   }
 }
+
+/** What a lock or unlock command actually did. */
+export type OperateOutcome = 'changed' | 'unchanged';
 
 interface TokenResponse {
   access_token: string;
@@ -138,6 +149,10 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * else (the Danalock app, another Homebridge instance) is mid-operation, the job fails this way.
  * The exact spelling varies, so match loosely on a normalised string.
  */
+/** The lock's answer to being asked for the position it is already in. */
+const isNothingChangedMessage = (text: string): boolean =>
+  text.toLowerCase().replace(/[\s_-]/g, '') === 'nothingchanged';
+
 const isBusyMessage = (text: string): boolean => {
   const normalised = text.toLowerCase().replace(/[\s_-]/g, '');
   return normalised.includes('bridgebusy') || normalised.includes('busy');
@@ -476,13 +491,22 @@ export class DanalockApiClient {
   }
 
   /**
-   * Locks or unlocks. Throws if the operation did not complete.
+   * Locks or unlocks. Resolves `'unchanged'` when the lock was already in the requested position
+   * (the lock answers `NothingChanged`), and throws if the operation did not complete.
    *
    * Queued at priority: someone is waiting at the door, so this must not sit behind background
    * state polling.
    */
-  async operate(lockSerial: string, operation: LockOperation): Promise<void> {
-    await this.run(lockSerial, OP_OPERATE, [operation], true);
+  async operate(lockSerial: string, operation: LockOperation): Promise<OperateOutcome> {
+    try {
+      await this.run(lockSerial, OP_OPERATE, [operation], true);
+      return 'changed';
+    } catch (error) {
+      if (error instanceof DanalockJobError && error.nothingChanged) {
+        return 'unchanged';
+      }
+      throw error;
+    }
   }
 
   /**
@@ -670,6 +694,15 @@ export class DanalockApiClient {
 
       if (status === JOB_FAILED) {
         const detail = failureDetail(poll.result);
+
+        // Not a failure of the bridge or the lock: the lock answered, and its answer is that it
+        // was already where it was asked to be. Counting it as a failure would make a healthy
+        // bridge look troublesome in the summaries.
+        if (isNothingChangedMessage(detail)) {
+          record('ok', 'NothingChanged (already in the requested position)');
+          throw new DanalockJobError(`${operation}: ${detail}`, false, true);
+        }
+
         record('failed', detail);
         throw new DanalockJobError(`${operation} failed: ${detail}`, isBusyMessage(detail));
       }

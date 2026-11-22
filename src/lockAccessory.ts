@@ -196,7 +196,20 @@ export class DanalockLockAccessory {
     const desired: LockState = wantLocked ? 'Locked' : 'Unlocked';
 
     if (this.operating) {
-      this.platform.log.warn(`Ignoring ${desired.toLowerCase()} request for ${this.label}: an operation is already running.`);
+      // The same request again while it is already being carried out: accept it. It will be
+      // fulfilled by the operation in flight, and rejecting it only makes HomeKit retry — dozens
+      // of times a second — and report an error for a request that is in fact succeeding.
+      if (desired === this.targetState) {
+        this.platform.log.debug(`${this.label} is already being ${desired.toLowerCase()}; accepting the repeated request.`);
+        return;
+      }
+
+      // The opposite request mid-operation cannot be honoured: a Danalock cannot be stopped
+      // part-way, and silently queueing a reversal would move the bolt after the user stopped
+      // watching.
+      this.platform.log.warn(
+        `Ignoring ${desired.toLowerCase()} request for ${this.label}: it is still being ${this.targetState?.toLowerCase() ?? 'operated'}.`,
+      );
       throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.RESOURCE_BUSY);
     }
 
@@ -211,12 +224,17 @@ export class DanalockLockAccessory {
   private async runOperation(desired: LockState, wantLocked: boolean): Promise<void> {
     try {
       this.platform.log.info(`${wantLocked ? 'Locking' : 'Unlocking'} ${this.label}...`);
-      await this.platform.api2.operate(this.serial, wantLocked ? 'lock' : 'unlock');
+      const outcome = await this.platform.api2.operate(this.serial, wantLocked ? 'lock' : 'unlock');
 
+      // Either way the lock itself has just reported being in the requested position.
       this.currentState = desired;
       this.clearFailureStreak();
       this.publishState();
-      this.platform.log.info(`${this.label} is now ${desired.toLowerCase()}.`);
+      if (outcome === 'unchanged') {
+        this.platform.log.info(`${this.label} was already ${desired.toLowerCase()}.`);
+      } else {
+        this.platform.log.info(`${this.label} is now ${desired.toLowerCase()}.`);
+      }
 
       // Confirm against the lock shortly after, in case it did not physically complete.
       this.platform.scheduleConfirmation(this);

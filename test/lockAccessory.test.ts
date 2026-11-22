@@ -114,13 +114,13 @@ interface Harness {
   api2: {
     getState: () => Promise<'Locked' | 'Unlocked' | null>;
     getBattery: () => Promise<number | null>;
-    operate: () => Promise<void>;
+    operate: () => Promise<unknown>;
   };
 }
 
 function buildHarness(options: {
   getState: () => Promise<'Locked' | 'Unlocked' | null>;
-  operate?: () => Promise<void>;
+  operate?: () => Promise<unknown>;
   getBattery?: () => Promise<number | null>;
   unresponsiveThreshold?: number;
   showBattery?: boolean;
@@ -481,7 +481,58 @@ describe('operating the lock from HomeKit', () => {
     assert.match(errors[0].message, /has NOT been locked/);
   });
 
-  it('rejects a second command while one is still running', async () => {
+  it('logs "already locked", not an error, when the lock was already in position', async () => {
+    const harness = buildHarness({
+      getState: async () => 'Locked',
+      operate: async () => 'unchanged',
+    });
+
+    await harness.accessory.refresh();
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(readCurrentState(harness), Characteristic.LockCurrentState.SECURED);
+    assert.equal(readTargetState(harness), Characteristic.LockTargetState.SECURED);
+    assert.deepEqual(
+      harness.logs.filter((entry) => entry.level === 'error'),
+      [],
+      'an already-locked door must not be reported as a failure',
+    );
+    assert.ok(harness.logs.some((entry) => entry.level === 'info' && /was already locked/.test(entry.message)));
+  });
+
+  /**
+   * Rejecting a repeat of the request already in progress made HomeKit retry it dozens of times a
+   * second, each one reported as an error, for a request that was in fact succeeding.
+   */
+  it('accepts a repeat of the request already in progress without starting another', async () => {
+    let releaseOperation: (() => void) | undefined;
+    let operations = 0;
+    const harness = buildHarness({
+      getState: async () => 'Unlocked',
+      operate: () => {
+        operations++;
+        return new Promise<void>((resolve) => (releaseOperation = resolve));
+      },
+    });
+
+    await writeTargetState(harness, Characteristic.LockTargetState.SECURED);
+    for (let i = 0; i < 5; i++) {
+      assert.doesNotThrow(() => writeTargetState(harness, Characteristic.LockTargetState.SECURED));
+    }
+
+    assert.equal(operations, 1, 'repeats must be absorbed by the operation in flight');
+    assert.deepEqual(
+      harness.logs.filter((entry) => entry.level === 'warn' || entry.level === 'error'),
+      [],
+    );
+
+    releaseOperation!();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(readCurrentState(harness), Characteristic.LockCurrentState.SECURED);
+  });
+
+  it('rejects the opposite command while one is still running', async () => {
     let releaseOperation: (() => void) | undefined;
     const harness = buildHarness({
       getState: async () => 'Unlocked',
@@ -493,7 +544,7 @@ describe('operating the lock from HomeKit', () => {
     assert.throws(
       () => writeTargetState(harness, Characteristic.LockTargetState.UNSECURED),
       HapStatusError,
-      'overlapping taps should be rejected, not queued up',
+      'a reversal mid-operation cannot be honoured and must not be queued silently',
     );
 
     releaseOperation!();

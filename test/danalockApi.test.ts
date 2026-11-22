@@ -197,6 +197,53 @@ describe('execute/poll state machine', () => {
   });
 });
 
+describe('NothingChanged', () => {
+  /**
+   * The lock answers NothingChanged when asked for the position it is already in. Reporting that
+   * as a failure produced "The door has NOT been locked" for a door that was locked.
+   */
+  it('resolves "unchanged" instead of throwing when the lock is already in position', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' });
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Failed', result: { afi_status_text: 'NothingChanged' } });
+
+    const log = recordingLog();
+    const client = new DanalockApiClient('user@example.com', 'secret', log, FAST);
+
+    assert.equal(await client.operate(LOCK_A, 'lock'), 'unchanged');
+    // The bridge and lock both answered correctly, so it must not count against the bridge.
+    assert.ok(
+      log.lines.some((line) => /afi\.lock\.operate on .*: ok .*NothingChanged/.test(line)),
+      `expected an ok line for NothingChanged, got:\n${log.lines.join('\n')}`,
+    );
+  });
+
+  it('resolves "changed" when the lock actually moved', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' });
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Succeeded', result: {} });
+
+    assert.equal(await newClient().operate(LOCK_A, 'lock'), 'changed');
+  });
+
+  it('still throws for genuine operate failures', async () => {
+    mockToken();
+    agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' });
+    agent
+      .get(BRIDGE_ORIGIN)
+      .intercept({ path: '/bridge/v1/poll', method: 'POST' })
+      .reply(200, { id: 'job-1', status: 'Failed', result: { dmi_status_text: 'BridgeNotAttached' } });
+
+    await assert.rejects(() => newClient().operate(LOCK_A, 'lock'), /BridgeNotAttached/);
+  });
+});
+
 describe('diagnostics', () => {
   const succeedingBridge = (): void => {
     agent.get(BRIDGE_ORIGIN).intercept({ path: '/bridge/v1/execute', method: 'POST' }).reply(200, { id: 'job-1' }).persist();

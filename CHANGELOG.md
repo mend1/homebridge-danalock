@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-21
+
+### Fixed
+
+- **Locking a door that is already locked is no longer reported as a failure.** Asked for the
+  position it is already in, the lock answers `NothingChanged`. That was treated as an error and
+  logged as "The door has NOT been locked", which was untrue and alarming. It is now logged as
+  "already locked", HomeKit shows the confirmed state, and the bridge diagnostics count it as a
+  success, since the bridge and lock both responded correctly.
+- **Repeating a request while it is being carried out no longer triggers a retry storm.** A second
+  lock request arriving while the lock was already locking was rejected as busy, and HomeKit
+  responded by retrying it, dozens of times a second, each one reported as an error. A repeat of
+  the request in progress is now accepted, since the operation in flight will fulfil it. The
+  opposite request mid-operation is still rejected: a Danalock cannot be stopped part-way, and
+  queueing a reversal would move the bolt after you had stopped watching.
+
 ## [0.2.0] - 2026-08-12
 
 Limits how much of a Danabridge's capacity the plugin can consume, and makes a troublesome bridge
@@ -176,6 +192,7 @@ First public release.
   outside HomeKit are detected by polling, as the API offers no push notifications.
 - Built on unofficial, undocumented API endpoints, which Danalock could change at any time.
 
+[0.2.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.1
 [0.2.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.1
 [0.2.0-beta.0]: https://github.com/mend1/homebridge-danalock/releases/tag/v0.2.0-beta.0
