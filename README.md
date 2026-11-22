@@ -157,12 +157,14 @@ and the plugin logs a line for every bridge operation, plus a summary for each b
 minutes:
 
 ```
-[bridge aa:bb:cc:dd:ee:ff] afi.lock.get-state on 11:22:33:44:55:66: ok in 5820ms after 6 poll(s)
+[bridge aa:bb:cc:dd:ee:ff] afi.lock.get-state on 11:22:33:44:55:66: ok in 5820ms after 6 poll(s) — Locked
 [bridge aa:bb:cc:dd:ee:ff] 18/20 ok, 2 failed (ConnectionLost×2); duration min/med/max 4980/5820/9100ms
 ```
 
 Successes are included on purpose: a healthy bridge's timings are the baseline that makes a
-troublesome one legible. With more than one bridge, comparing their summaries side by side over the
+troublesome one legible. Each successful read also shows what the lock reported (`Locked`, `Unlocked`, or
+a battery percentage), so a change that never appears in HomeKit can be traced to whether the lock
+reported it. With more than one bridge, comparing their summaries side by side over the
 same window is usually enough to identify which is at fault.
 
 **Two different things are called "polling" here**, and it helps to keep them apart:

@@ -271,6 +271,24 @@ describe('diagnostics', () => {
     assert.match(line!, /in \d+ms/, 'the line must record how long the operation took');
   });
 
+  /**
+   * Without the returned state, a read that reported a stale "Locked" looked identical to one
+   * that reported a change, so a missed physical operation could not be attributed.
+   */
+  it('includes what a state read returned', async () => {
+    mockToken();
+    succeedingBridge();
+
+    const log = recordingLog();
+    const client = new DanalockApiClient('user@example.com', 'secret', log, FAST);
+    client.setBridgeForLock(LOCK_A, BRIDGE_1);
+
+    await client.getState(LOCK_A);
+
+    const line = log.lines.find((l) => l.includes('afi.lock.get-state') && l.includes('ok'));
+    assert.match(line!, /poll\(s\) — Locked$/);
+  });
+
   it('summarises per bridge, keeping bridges separate', async () => {
     mockToken();
     succeedingBridge();

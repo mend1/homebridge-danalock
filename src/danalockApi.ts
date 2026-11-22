@@ -688,8 +688,9 @@ export class DanalockApiClient {
       const status = poll?.status;
 
       if (status === JOB_SUCCEEDED) {
-        record('ok');
-        return poll.result ?? {};
+        const result = poll.result ?? {};
+        record('ok', resultSummary(operation, result));
+        return result;
       }
 
       if (status === JOB_FAILED) {
@@ -753,6 +754,24 @@ function failureDetail(result: Record<string, unknown> | undefined): string {
   } catch {
     return 'no detail returned';
   }
+}
+
+/**
+ * What a successful read returned, for the per-operation debug line.
+ *
+ * Without it a read reporting a stale "Locked" is indistinguishable from one reporting a change,
+ * and "the plugin missed it" cannot be told apart from "Danalock reported the wrong state".
+ */
+function resultSummary(operation: string, result: Record<string, unknown>): string | undefined {
+  if (operation === OP_GET_STATE) {
+    const state = result['state'];
+    return typeof state === 'string' ? state : `state=${JSON.stringify(state ?? null)}`;
+  }
+  if (operation === OP_GET_BATTERY) {
+    const level = result['battery_level'];
+    return typeof level === 'number' ? `${level}%` : `battery_level=${JSON.stringify(level ?? null)}`;
+  }
+  return undefined;
 }
 
 /** Extracts a readable message without leaking anything sensitive. */

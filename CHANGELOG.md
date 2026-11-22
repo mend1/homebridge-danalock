@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Debug lines show what each read returned:** `Locked` or `Unlocked` for a state read, a
+  percentage for a battery read. Previously a read that reported a stale state looked identical to
+  one that reported a change, so a physical operation that never reached HomeKit could not be
+  traced to whether the lock had reported it.
+
 ## [0.2.1] - 2026-11-21
 
 ### Fixed
